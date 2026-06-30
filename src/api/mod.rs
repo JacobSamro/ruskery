@@ -33,6 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/admin/orgs", get(list_all_orgs))
         .route("/api/v1/orgs/{slug}", get(get_org))
         .route("/api/v1/orgs/{slug}/repos", get(list_repos))
+        .route("/api/v1/orgs/{slug}/analytics", get(org_analytics))
         .route(
             "/api/v1/orgs/{slug}/repos/{*name}",
             get(get_repo).delete(delete_repo),
@@ -498,6 +499,33 @@ async fn list_repos(
     let (org, _) = member_of(&state, &user.id, &slug).await?;
     let repos = db::orgs::list_repos(state.db(), &org.id).await?;
     Ok(json_ok(json!({ "repositories": repos })))
+}
+
+/// Org usage analytics over a trailing window (`?range=30d`, default 30, max 365).
+/// Visible to any org member.
+async fn org_analytics(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Path(slug): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response> {
+    let (org, _) = member_of(&state, &user.id, &slug).await?;
+    let days: i64 = params
+        .get("range")
+        .map(|r| r.trim_end_matches('d'))
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(30)
+        .clamp(1, 365);
+    let since = crate::util::utc_day_offset(days);
+    let db = state.db();
+    Ok(json_ok(json!({
+        "range_days": days,
+        "overview": db::analytics::overview(db, &org.id, &since).await?,
+        "series": db::analytics::daily_series(db, &org.id, &since).await?,
+        "storage": db::analytics::storage_series(db, &org.id, &since).await?,
+        "top_repos": db::analytics::top_repos(db, &org.id, &since, 10).await?,
+        "top_users": db::analytics::top_users(db, &org.id, &since, 10).await?,
+    })))
 }
 
 async fn get_repo(

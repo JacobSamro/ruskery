@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Org usage analytics.** A new per-org Analytics page (and
+  `GET /api/v1/orgs/{slug}/analytics?range=30d`) showing pushes, pulls, storage
+  (deduplicated), attributed egress, daily push/pull and storage-growth charts,
+  and top repositories / most-active users. Capture is in-memory on the hot path
+  (a sharded counter increment, never a per-request DB write) and flushed to
+  daily rollup tables by a background task, so SQLite sees ~one batched upsert
+  per flush regardless of pull volume. Push history is backfilled from the audit
+  log on first run. Configurable via `[analytics] enabled / rollup_secs`.
+
 ### Changed
 
 - **Dashboard now uses shadcn-vue components.** All native `<select>` dropdowns

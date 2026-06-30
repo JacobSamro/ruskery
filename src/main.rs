@@ -1,5 +1,6 @@
 //! ruskery — a high-performance, S3-backed (Tigris) Docker/OCI registry.
 
+mod analytics;
 mod api;
 mod auth;
 mod config;
@@ -146,10 +147,26 @@ async fn main() -> anyhow::Result<()> {
             let tls_enabled = config.tls.enabled;
             let http_addr = config.server.http_addr.clone();
             let gc_interval = config.gc.interval_secs;
+            let analytics_enabled = config.analytics.enabled;
+            let rollup_secs = config.analytics.rollup_secs;
             let state = state::AppState::new(config, pool, storage, secret_key);
             let app = server::router(state.clone());
 
             tokio::spawn(gc::background(state.clone(), gc_interval));
+
+            if analytics_enabled {
+                // One-time backfill of push history from the audit log.
+                if db::settings::get(state.db(), "analytics_backfilled")
+                    .await?
+                    .is_none()
+                {
+                    db::analytics::backfill_pushes(state.db()).await.ok();
+                    db::settings::set(state.db(), "analytics_backfilled", "1")
+                        .await
+                        .ok();
+                }
+                tokio::spawn(analytics::flush_loop(state.clone(), rollup_secs));
+            }
 
             if tls_enabled {
                 tls::serve(state, app).await?;

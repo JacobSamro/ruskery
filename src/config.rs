@@ -29,6 +29,27 @@ pub struct Config {
     /// Garbage collection settings.
     #[serde(default)]
     pub gc: GcConfig,
+    /// Usage analytics settings.
+    #[serde(default)]
+    pub analytics: AnalyticsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyticsConfig {
+    /// Capture per-org usage (push/pull/storage). In-memory + daily rollups.
+    pub enabled: bool,
+    /// How often (seconds) to flush in-memory counters to the rollup tables and
+    /// take the daily storage snapshot.
+    pub rollup_secs: u64,
+}
+
+impl Default for AnalyticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rollup_secs: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +217,7 @@ impl Default for Config {
             auth: AuthConfig::default(),
             tls: TlsConfig::default(),
             gc: GcConfig::default(),
+            analytics: AnalyticsConfig::default(),
         }
     }
 }

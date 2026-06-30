@@ -25,6 +25,7 @@ const nav = computed(() => {
   if (!s) return [];
   return [
     { to: `/orgs/${s}`, label: "Repositories", icon: "boxes", exact: true },
+    { to: `/orgs/${s}/analytics`, label: "Analytics", icon: "grid" },
     { to: `/orgs/${s}/teams`, label: "Teams", icon: "team" },
     { to: `/orgs/${s}/members`, label: "Members", icon: "users" },
     { to: `/orgs/${s}/settings`, label: "Settings", icon: "settings" },

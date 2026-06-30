@@ -1258,6 +1258,53 @@ async fn end_to_end() {
     assert_eq!(is2, 201);
     assert_eq!(im1, im2, "re-pushed manifest is idempotent");
 
+    // ── usage analytics ──────────────────────────────────────────────
+    // All the pushes, manifest GETs and 307 blob pulls above are captured in
+    // memory; wait for a rollup flush (RUSKERY_ANALYTICS__ROLLUP_SECS=1).
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let an: serde_json::Value = dash
+        .get(format!("{base}/api/v1/orgs/acme/analytics?range=30d"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        an["overview"]["pushes"].as_i64().unwrap() >= 1,
+        "expected pushes recorded: {an}"
+    );
+    assert!(
+        an["overview"]["pulls"].as_i64().unwrap() >= 1,
+        "expected pulls recorded: {an}"
+    );
+    assert!(
+        an["overview"]["storage_bytes"].as_i64().unwrap() > 0,
+        "expected storage bytes: {an}"
+    );
+    assert!(
+        an["top_repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["repo"] == "app"),
+        "acme/app should appear in top repos: {an}"
+    );
+    // Tenant isolation: the outsider (admin of 'rival' only) sees no acme data.
+    let rival_an: serde_json::Value = outsider
+        .get(format!("{base}/api/v1/orgs/rival/analytics"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        rival_an["overview"]["pulls"].as_i64().unwrap(),
+        0,
+        "rival org must not see acme pulls"
+    );
+
     // ── garbage collection ────────────────────────────────────────────
     // Push a blob that no manifest references, sweep, and confirm only the
     // orphan is removed while the referenced layer survives.

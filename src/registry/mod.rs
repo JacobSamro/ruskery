@@ -200,6 +200,20 @@ async fn dispatch(
             .into_response();
     };
 
+    // Classify this request for usage analytics *before* the match consumes
+    // `parsed.op`. The optional digest is used to attribute bytes.
+    let metric: Option<(crate::analytics::Kind, Option<String>)> = match (&parsed.op, &method) {
+        (Op::Manifest(_), &Method::GET) => Some((crate::analytics::Kind::ManifestPull, None)),
+        (Op::Manifest(_), &Method::PUT) => Some((crate::analytics::Kind::ManifestPush, None)),
+        (Op::Blob(d), &Method::GET) => Some((crate::analytics::Kind::BlobServe, Some(d.clone()))),
+        (Op::UploadSession(_), &Method::PUT) | (Op::UploadStart, &Method::POST) => {
+            uploads::query_param(&query, "digest")
+                .map(percent_decode)
+                .map(|d| (crate::analytics::Kind::BlobUpload, Some(d)))
+        }
+        _ => None,
+    };
+
     let result = match parsed.op {
         Op::TagsList => tags::list(&state, &org, &repo_name, &name).await,
         Op::Manifest(reference) => match method {
@@ -267,6 +281,35 @@ async fn dispatch(
             _ => unsupported(),
         },
     };
+
+    // Best-effort usage capture (in-memory; never blocks or fails the request).
+    // The response status is copied out first so no non-Send `Response`/`Body`
+    // borrow is held across the byte-size lookup `.await`.
+    if state.usage().enabled() {
+        if let (Some((kind, digest)), Some(status)) =
+            (metric, result.as_ref().ok().map(|r| r.status()))
+        {
+            use crate::analytics::Kind;
+            let ok = match kind {
+                Kind::ManifestPull => status == StatusCode::OK,
+                Kind::BlobServe => status == StatusCode::TEMPORARY_REDIRECT,
+                Kind::ManifestPush | Kind::BlobUpload => status == StatusCode::CREATED,
+            };
+            if ok {
+                let bytes = match digest {
+                    Some(d) => db::content::blob_size(state.db(), &org.id, &d)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0),
+                    None => 0,
+                };
+                state
+                    .usage()
+                    .record(&org.id, &repo_name, Some(&claims.sub), kind, bytes);
+            }
+        }
+    }
 
     result.unwrap_or_else(|e| e.into_response())
 }

@@ -39,3 +39,7 @@ cache_dir = "/var/lib/ruskery/acme"
 [gc]
 interval_secs = 0                    # background blob GC interval; 0 disables (run `ruskery gc`)
 grace_secs = 3600                    # never collect blobs younger than this (protects in-flight pushes)
+
+[analytics]
+enabled = true                       # per-org push/pull/storage analytics (in-memory + daily rollups)
+rollup_secs = 60                     # how often to flush counters and snapshot storage

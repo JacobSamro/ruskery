@@ -27,6 +27,7 @@ self-contained binary with no runtime services to manage.
 - 🔑 **Real auth.** Argon2id passwords, personal access tokens for `docker login`, short‑lived scoped JWTs for the registry.
 - 🔓 **Google sign-in (optional).** Configure an OAuth client right in the dashboard (it shows the exact redirect URI for the Google Cloud console); restrict to an email domain to auto-provision your team.
 - 🌐 **Automatic HTTPS.** Add a domain in the dashboard; certificates are issued and renewed via Let's Encrypt (no certbot).
+- 📈 **Usage analytics.** Per‑org pushes, pulls, storage, attributed egress, daily trends, and top repos/users — captured in memory and rolled up daily, so it stays light even under heavy pull traffic.
 - 🧹 **Garbage collection.** Mark‑and‑sweep of unreferenced blobs, on a schedule or on demand.
 - 📊 **Dashboard.** Browse repos & tags, manage members/teams/tokens, connect domains, read the audit log.
 - 🛡️ **Hardened by default.** Per‑IP rate limiting on auth, CSP/HSTS/security headers, per‑org storage isolation.

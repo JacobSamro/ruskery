@@ -1,5 +1,6 @@
 //! SQLite connection pool (WAL mode) and migration runner.
 
+pub mod analytics;
 pub mod audit;
 pub mod content;
 pub mod domains;

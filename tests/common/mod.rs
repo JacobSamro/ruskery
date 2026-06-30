@@ -237,6 +237,8 @@ impl Ruskery {
             .env("RUSKERY_SERVER__HTTP_ADDR", format!("127.0.0.1:{port}"))
             // TLS defaults on now; the e2e drives plain HTTP on a loopback port.
             .env("RUSKERY_TLS__ENABLED", "false")
+            // Flush analytics counters every second so the test can observe them.
+            .env("RUSKERY_ANALYTICS__ROLLUP_SECS", "1")
             .env("RUSKERY_STORAGE__ENDPOINT", format!("http://{stub}"))
             .env("RUSKERY_STORAGE__BUCKET", "test")
             .env("RUSKERY_STORAGE__REGION", "us-east-1")
