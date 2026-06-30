@@ -1,26 +1,30 @@
-name: release
+name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: build ${{ matrix.target }}
+  # Gate the release on the same checks CI runs, once, before building artifacts.
+  check:
+    name: Gate (fmt, clippy, tests)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      # 1. Build the dashboard (Nuxt static) so rust-embed can bundle it.
+      # rust-embed bundles web/.output/public at compile time — build it first.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -30,24 +34,65 @@ jobs:
           bun install --frozen-lockfile
           bun run generate
 
-      # 2. Cross-compile a static musl binary.
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-zigbuild
-        run: |
-          pip install ziglang
-          cargo install --locked cargo-zigbuild
-          rustup target add ${{ matrix.target }}
-      - name: Build
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
 
-      # 3. Package.
+      - name: fmt / clippy / test
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --release --locked
+
+  build:
+    name: Build & package (${{ matrix.target }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build web UI
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run generate
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
       - name: Package
         run: |
-          asset="ruskery-${{ matrix.target }}"
+          set -euo pipefail
+          NAME="ruskery-${{ matrix.target }}"
+          mkdir -p "stage/${NAME}"
+          cp "target/${{ matrix.target }}/release/ruskery" "stage/${NAME}/"
+          strip "stage/${NAME}/ruskery" || true
+          cp README.md LICENSE config.example.toml "stage/${NAME}/"
+          cp packaging/ruskery.service "stage/${NAME}/"
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/ruskery" ruskery
-          tar -czf "dist/${asset}.tar.gz" ruskery
-          ( cd dist && sha256sum "${asset}.tar.gz" > "${asset}.sha256" )
+          # Binary sits at the archive root so install.sh can extract it directly.
+          tar -C "stage/${NAME}" -czf "dist/${NAME}.tar.gz" .
+          ( cd dist && sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256" )
 
       - uses: actions/upload-artifact@v4
         with:
@@ -55,26 +100,39 @@ jobs:
           path: dist/*
 
   release:
+    name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
       - name: Assemble release assets
         run: |
+          set -euo pipefail
           mkdir -p dist
-          find artifacts -type f -name '*.tar.gz' -exec cp {} dist/ \;
-          cat artifacts/*/*.sha256 > dist/SHA256SUMS
-          cp packaging/ruskery.service dist/ruskery.service
+          find artifacts -name '*.tar.gz' -exec cp {} dist/ \;
+          ( cd dist && sha256sum *.tar.gz > SHA256SUMS )
           cp install.sh dist/install.sh
-      - name: Publish release
+          cp packaging/ruskery.service dist/ruskery.service
+          echo "── release assets ──"; ls -1 dist
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
-            dist/ruskery.service
             dist/install.sh
-          generate_release_notes: true
+            dist/ruskery.service

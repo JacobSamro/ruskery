@@ -17,11 +17,11 @@ Docker registry designed to run on the smallest box you have. It keeps image lay
 data path entirely: pulls are answered with a redirect to a presigned [Tigris](https://www.tigrisdata.com/)
 URL, so bytes stream straight from the nearest CDN edge while your droplet only does auth and
 metadata. The whole thing — registry, REST API, and a shadcn‑style web dashboard — ships as one
-static binary with no runtime dependencies.
+self-contained binary with no runtime services to manage.
 
 ## Features
 
-- 🦀 **One static binary.** No Docker, no Postgres, no Redis. Embedded SQLite (WAL) + an embedded web UI.
+- 🦀 **One self-contained binary.** No Docker, no Postgres, no Redis. Embedded SQLite (WAL) + an embedded web UI.
 - ⚡ **Pulls served from the CDN.** `307` redirect to presigned Tigris URLs — layer bytes never touch the server.
 - 🔐 **Private & multi‑tenant.** Organizations → teams → users, with per‑repository `pull`/`push`/`admin` grants.
 - 🔑 **Real auth.** Argon2id passwords, personal access tokens for `docker login`, short‑lived scoped JWTs for the registry.
@@ -38,7 +38,7 @@ static binary with no runtime dependencies.
 curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/main/install.sh | sudo sh
 ```
 
-This drops a static binary at `/usr/local/bin/ruskery`, writes `/etc/ruskery/config.toml`, and
+This drops a self-contained binary at `/usr/local/bin/ruskery`, writes `/etc/ruskery/config.toml`, and
 installs + enables a `ruskery` systemd service. (Prefer containers? See [Docker](#run-with-docker).)
 
 ### 2. Point it at a Tigris bucket
@@ -76,7 +76,7 @@ $6 VPS while serving images from a global edge network.
 
 | | ruskery |
 |---|---|
-| Footprint | one static binary + one SQLite file |
+| Footprint | one self-contained binary + one SQLite file |
 | Pull path | client → CDN edge (server not in the data path) |
 | Push path | streamed straight into Tigris via S3 multipart, digest verified on the fly |
 | TLS | automatic Let's Encrypt, managed from the dashboard |

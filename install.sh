@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/main/install.sh | sh
 #
-# Downloads the matching static binary (verified against SHA256SUMS), installs a
+# Downloads the matching binary (verified against SHA256SUMS), installs a
 # systemd service, and writes a starter config. Re-running upgrades in place.
 #
 # Environment:
@@ -32,7 +32,7 @@ case "$(uname -m)" in
   aarch64|arm64)  arch="aarch64" ;;
   *) err "unsupported architecture: $(uname -m)" ;;
 esac
-asset="ruskery-${arch}-unknown-linux-musl"
+asset="ruskery-${arch}-unknown-linux-gnu"
 
 for tool in curl tar sha256sum install; do
   command -v "$tool" >/dev/null 2>&1 || err "missing required tool: $tool"
