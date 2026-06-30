@@ -28,21 +28,34 @@ pub async fn serve(state: AppState, app: Router) -> anyhow::Result<()> {
     // rustls needs a process-wide crypto provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // HTTP listener: redirect everything to HTTPS.
     let http_addr = state.config().server.http_addr.clone();
-    let public_url = state.config().server.public_url.clone();
-    tokio::spawn(redirect_server(http_addr, public_url));
-
     let https_addr = state.config().server.https_addr.clone();
+    let public_url = state.config().server.public_url.clone();
+
     loop {
         let domains = db::domains::allowlist(state.db()).await.unwrap_or_default();
         if domains.is_empty() {
-            tracing::warn!("TLS enabled but no domains configured yet — add one in the dashboard");
-            state.domains_changed().await;
+            // Automatic TLS is on but there's no domain to certify yet. Serve the
+            // dashboard over plain HTTP so it stays reachable (e.g. by IP) for
+            // first-run setup, and switch to TLS the moment a domain is added —
+            // redirecting :80 now would strand the box on an unservable :443.
+            tracing::warn!(
+                %http_addr,
+                "automatic TLS is on but no domain is configured yet — serving HTTP; add a domain in the dashboard to provision a certificate"
+            );
+            tokio::select! {
+                res = crate::server::serve_http(&http_addr, app.clone()) => return res,
+                _ = state.domains_changed() => {
+                    tracing::info!("domain added — provisioning TLS");
+                }
+            }
             continue;
         }
 
+        // A domain is configured: redirect :80 → HTTPS and serve ACME-managed
+        // certificates on :443.
         tracing::info!(?domains, "starting ACME TLS listener");
+        let redirect = tokio::spawn(redirect_server(http_addr.clone(), public_url.clone()));
         tokio::select! {
             res = run_acme(&state, &https_addr, app.clone(), domains) => {
                 if let Err(e) = res {
@@ -54,6 +67,9 @@ pub async fn serve(state: AppState, app: Router) -> anyhow::Result<()> {
                 tracing::info!("domain set changed — reloading TLS");
             }
         }
+        // Drop the :80 redirector before the next iteration rebinds it (or falls
+        // back to serving HTTP if every domain was removed).
+        redirect.abort();
     }
 }
 

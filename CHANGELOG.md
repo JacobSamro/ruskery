@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-30
+
+### Changed
+
+- **Automatic TLS is now on by default.** Previously `tls.enabled` defaulted to
+  `false`, so adding a domain in the dashboard did nothing until you edited the
+  config and restarted. Now the server listens on `:443` and provisions a
+  Let's Encrypt certificate as soon as a domain is added — no restart. Until a
+  domain exists it keeps serving plain HTTP (so a fresh, IP-only box stays
+  reachable for first-run setup instead of redirecting to an unservable `:443`).
+
+  Existing installs keep whatever is in their `config.toml`; set
+  `[tls] enabled = true` and restart to adopt the new behavior.
+
 ## [0.2.0] - 2026-06-30
 
 ### Fixed

@@ -108,8 +108,10 @@ access_key_id = ""
 secret_access_key = ""
 
 [tls]
-enabled = false            # set true after pointing a domain here
-contact_email = ""
+# Automatic Let's Encrypt is on. The server stays on plain HTTP until you add a
+# domain in the dashboard, then provisions a cert on :443 automatically.
+enabled = true
+contact_email = ""         # recommended: your email, for Let's Encrypt notices
 TOML
   chmod 640 "$CONFIG_DIR/config.toml"
   chown root:ruskery "$CONFIG_DIR/config.toml" 2>/dev/null || true

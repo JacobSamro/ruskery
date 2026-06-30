@@ -116,7 +116,7 @@ token_ttl_secs   = 300             # registry bearer token lifetime
 session_ttl_secs = 604800          # dashboard session lifetime
 
 [tls]
-enabled       = false              # true to turn on automatic Let's Encrypt
+enabled       = true               # automatic Let's Encrypt (serves HTTP until a domain is added)
 contact_email = "admin@example.com"
 staging       = false              # use LE staging while testing
 

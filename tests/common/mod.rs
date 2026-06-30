@@ -235,6 +235,8 @@ impl Ruskery {
             .env("RUST_LOG", "error")
             .env("RUSKERY_DATABASE__PATH", &db_path)
             .env("RUSKERY_SERVER__HTTP_ADDR", format!("127.0.0.1:{port}"))
+            // TLS defaults on now; the e2e drives plain HTTP on a loopback port.
+            .env("RUSKERY_TLS__ENABLED", "false")
             .env("RUSKERY_STORAGE__ENDPOINT", format!("http://{stub}"))
             .env("RUSKERY_STORAGE__BUCKET", "test")
             .env("RUSKERY_STORAGE__REGION", "us-east-1")

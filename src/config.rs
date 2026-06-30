@@ -174,7 +174,11 @@ impl Default for AuthConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // On by default: as soon as a domain is added in the dashboard, a
+            // Let's Encrypt cert is provisioned on :443 with no restart. With no
+            // domain yet the server stays on plain HTTP (reachable by IP for
+            // first-run setup) — see `crate::tls::serve`.
+            enabled: true,
             contact_email: String::new(),
             staging: false,
             cache_dir: PathBuf::from("/var/lib/ruskery/acme"),
