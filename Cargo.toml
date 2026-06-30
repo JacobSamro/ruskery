@@ -9,6 +9,17 @@ repository = "https://github.com/jacobsamro/ruskery"
 readme = "README.md"
 default-run = "ruskery"
 
+# cargo-release is the single source of truth for versioning: `cargo release
+# <version|level> --execute` bumps this version, commits, tags `v<version>`
+# (matching the release workflow's `v*` trigger), and pushes — so the manifest
+# version and the git tag can never drift.
+[package.metadata.release]
+publish = false                     # ruskery is a binary app, not a crates.io lib
+tag-name = "v{{version}}"
+tag-message = "ruskery {{version}}"
+pre-release-commit-message = "release: {{version}}"
+allow-branch = ["master", "main"]
+
 [[bin]]
 name = "ruskery"
 path = "src/main.rs"
