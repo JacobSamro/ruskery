@@ -1,0 +1,73 @@
+//! Shared application state passed to every handler.
+
+use std::sync::Arc;
+
+use crate::config::Config;
+use crate::db::Db;
+use crate::registry::uploads::UploadRegistry;
+use crate::storage::Storage;
+
+/// Cheaply-cloneable handle to shared server state.
+#[derive(Clone)]
+pub struct AppState(Arc<Inner>);
+
+pub struct Inner {
+    pub config: Config,
+    pub db: Db,
+    pub storage: Storage,
+    /// In-memory registry of in-progress blob uploads (single-process).
+    pub uploads: UploadRegistry,
+    /// Secret used to sign session cookies and registry JWTs.
+    pub secret_key: Vec<u8>,
+    /// Notified when the custom-domain set changes, so the TLS task reloads.
+    pub domains_changed: tokio::sync::Notify,
+}
+
+impl AppState {
+    pub fn new(config: Config, db: Db, storage: Storage, secret_key: Vec<u8>) -> Self {
+        AppState(Arc::new(Inner {
+            config,
+            db,
+            storage,
+            uploads: UploadRegistry::new(),
+            secret_key,
+            domains_changed: tokio::sync::Notify::new(),
+        }))
+    }
+
+    /// Wake the TLS task to reload its certificate domain set.
+    pub fn notify_domains_changed(&self) {
+        self.0.domains_changed.notify_one();
+    }
+
+    /// Await the next domain-set change.
+    pub async fn domains_changed(&self) {
+        self.0.domains_changed.notified().await;
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.0.config
+    }
+
+    pub fn db(&self) -> &Db {
+        &self.0.db
+    }
+
+    pub fn storage(&self) -> &Storage {
+        &self.0.storage
+    }
+
+    pub fn uploads(&self) -> &UploadRegistry {
+        &self.0.uploads
+    }
+
+    pub fn secret_key(&self) -> &[u8] {
+        &self.0.secret_key
+    }
+
+    /// Whether session cookies should carry the `Secure` attribute (only when
+    /// the public URL is HTTPS; lets dashboard login work over plain HTTP in dev).
+    pub fn cookie_secure(&self) -> bool {
+        self.0.config.server.public_url.starts_with("https://")
+    }
+}

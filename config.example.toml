@@ -1,0 +1,35 @@
+# ruskery configuration. Copy to /etc/ruskery/config.toml and edit.
+# Any value can also be set via environment, e.g. RUSKERY_STORAGE__BUCKET=my-bucket.
+# Secrets (storage keys) are best supplied via environment, not this file.
+
+[server]
+http_addr = "0.0.0.0:80"
+https_addr = "0.0.0.0:443"
+public_url = "https://registry.example.com"
+max_body_bytes = 33554432            # 32 MiB cap for non-streamed bodies
+
+[database]
+path = "/var/lib/ruskery/ruskery.db"
+
+[storage]
+endpoint = "https://t3.storage.dev"  # Tigris S3 endpoint
+bucket = "my-registry-bucket"
+region = "auto"
+# access_key_id = "..."              # prefer RUSKERY_STORAGE__ACCESS_KEY_ID
+# secret_access_key = "..."          # prefer RUSKERY_STORAGE__SECRET_ACCESS_KEY
+presign_ttl_secs = 900               # 15 min presigned-URL lifetime on pulls
+force_path_style = false
+
+[auth]
+# secret_key left empty -> auto-generated and stored in the database on first run
+token_ttl_secs = 300                 # registry bearer token lifetime
+session_ttl_secs = 604800            # dashboard session lifetime (7 days)
+
+[tls]
+enabled = false                      # set true to enable automatic Let's Encrypt
+contact_email = "admin@example.com"
+staging = false                      # use Let's Encrypt staging for testing
+cache_dir = "/var/lib/ruskery/acme"
+
+[gc]
+interval_secs = 0                    # background blob GC interval; 0 disables (run `ruskery gc`)

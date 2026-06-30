@@ -1,0 +1,87 @@
+[package]
+name = "ruskery"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "A high-performance, S3-backed (Tigris) Docker/OCI registry with a built-in dashboard."
+license = "MIT"
+repository = "https://github.com/jacobsamro/ruskery"
+readme = "README.md"
+default-run = "ruskery"
+
+[[bin]]
+name = "ruskery"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime + web
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["macros", "http2"] }
+axum-extra = { version = "0.10", features = ["typed-header", "cookie"] }
+tower = { version = "0.5", features = ["util", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors", "set-header", "limit"] }
+hyper = { version = "1", features = ["full"] }
+bytes = "1"
+http = "1"
+futures = "0.3"
+dashmap = "6"
+
+# Storage (Tigris = S3 compatible)
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = "1"
+aws-smithy-types = "1"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "time", "uuid"] }
+
+# Auth + crypto
+argon2 = "0.5"
+jsonwebtoken = "9"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+
+# Serialization + config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+figment = { version = "0.10", features = ["toml", "env"] }
+toml = "0.8"
+
+# CLI + observability
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Embedded web UI
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
+
+# Automatic TLS (Let's Encrypt / ACME)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-acme = { version = "0.13", default-features = false, features = ["ring", "tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio", "service"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Rate limiting
+governor = "0.8"
+
+# Utilities
+anyhow = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+# Pinned: time 0.3.52 changed the Parsable signature and breaks cookie 0.18.
+time = { version = "=0.3.51", features = ["serde", "formatting", "parsing"] }
+url = "2"
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

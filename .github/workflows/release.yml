@@ -1,0 +1,80 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Build the dashboard (Nuxt static) so rust-embed can bundle it.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build web UI
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run generate
+
+      # 2. Cross-compile a static musl binary.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-zigbuild
+        run: |
+          pip install ziglang
+          cargo install --locked cargo-zigbuild
+          rustup target add ${{ matrix.target }}
+      - name: Build
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      # 3. Package.
+      - name: Package
+        run: |
+          asset="ruskery-${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ruskery" ruskery
+          tar -czf "dist/${asset}.tar.gz" ruskery
+          ( cd dist && sha256sum "${asset}.tar.gz" > "${asset}.sha256" )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble release assets
+        run: |
+          mkdir -p dist
+          find artifacts -type f -name '*.tar.gz' -exec cp {} dist/ \;
+          cat artifacts/*/*.sha256 > dist/SHA256SUMS
+          cp packaging/ruskery.service dist/ruskery.service
+          cp install.sh dist/install.sh
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/ruskery.service
+            dist/install.sh
+          generate_release_notes: true

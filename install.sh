@@ -1,0 +1,156 @@
+#!/bin/sh
+# ruskery one-line installer.
+#
+#   curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/main/install.sh | sh
+#
+# Downloads the matching static binary (verified against SHA256SUMS), installs a
+# systemd service, and writes a starter config. Re-running upgrades in place.
+#
+# Environment:
+#   RUSKERY_VERSION   pin a release (default: latest)
+#   RUSKERY_REPO      github owner/repo (default: jacobsamro/ruskery)
+#   RUSKERY_PREFIX    install prefix for the binary (default: /usr/local/bin)
+set -eu
+
+REPO="${RUSKERY_REPO:-jacobsamro/ruskery}"
+VERSION="${RUSKERY_VERSION:-latest}"
+PREFIX="${RUSKERY_PREFIX:-/usr/local/bin}"
+CONFIG_DIR="/etc/ruskery"
+DATA_DIR="/var/lib/ruskery"
+SERVICE="/etc/systemd/system/ruskery.service"
+
+log()  { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
+err()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || err "please run as root (e.g. pipe into 'sudo sh')"
+
+# ── detect platform ──────────────────────────────────────────────
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+[ "$os" = "linux" ] || err "ruskery's installer targets Linux (got: $os)"
+case "$(uname -m)" in
+  x86_64|amd64)   arch="x86_64" ;;
+  aarch64|arm64)  arch="aarch64" ;;
+  *) err "unsupported architecture: $(uname -m)" ;;
+esac
+asset="ruskery-${arch}-unknown-linux-musl"
+
+for tool in curl tar sha256sum install; do
+  command -v "$tool" >/dev/null 2>&1 || err "missing required tool: $tool"
+done
+
+# ── resolve version ──────────────────────────────────────────────
+if [ "$VERSION" = "latest" ]; then
+  log "resolving latest release of $REPO"
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+  [ -n "$VERSION" ] || err "could not determine latest version"
+fi
+log "installing ruskery $VERSION ($arch)"
+
+base="https://github.com/${REPO}/releases/download/${VERSION}"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# ── download + verify ────────────────────────────────────────────
+log "downloading $asset.tar.gz"
+curl -fsSL "$base/${asset}.tar.gz" -o "$tmp/ruskery.tar.gz"
+curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+
+log "verifying checksum"
+want="$(grep " ${asset}.tar.gz\$" "$tmp/SHA256SUMS" | awk '{print $1}')"
+[ -n "$want" ] || err "checksum for ${asset}.tar.gz not found in SHA256SUMS"
+got="$(sha256sum "$tmp/ruskery.tar.gz" | awk '{print $1}')"
+[ "$want" = "$got" ] || err "checksum mismatch (expected $want, got $got)"
+
+tar -xzf "$tmp/ruskery.tar.gz" -C "$tmp"
+
+# ── install binary ───────────────────────────────────────────────
+log "installing binary to $PREFIX/ruskery"
+install -m 0755 "$tmp/ruskery" "$PREFIX/ruskery"
+
+# ── user, dirs, config ───────────────────────────────────────────
+if ! id ruskery >/dev/null 2>&1; then
+  log "creating system user 'ruskery'"
+  useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin ruskery 2>/dev/null \
+    || adduser --system --home "$DATA_DIR" --no-create-home ruskery 2>/dev/null || true
+fi
+mkdir -p "$CONFIG_DIR" "$DATA_DIR"
+chown -R ruskery:ruskery "$DATA_DIR" 2>/dev/null || chown -R ruskery "$DATA_DIR" 2>/dev/null || true
+
+if [ ! -f "$CONFIG_DIR/config.toml" ]; then
+  log "writing starter config to $CONFIG_DIR/config.toml"
+  cat > "$CONFIG_DIR/config.toml" <<'TOML'
+[server]
+http_addr = "0.0.0.0:80"
+https_addr = "0.0.0.0:443"
+# public_url = "https://registry.example.com"
+
+[database]
+path = "/var/lib/ruskery/ruskery.db"
+
+[storage]
+endpoint = "https://t3.storage.dev"
+bucket = ""                # <-- your Tigris bucket
+region = "auto"
+# Prefer setting these via environment in the systemd unit / drop-in:
+#   RUSKERY_STORAGE__ACCESS_KEY_ID, RUSKERY_STORAGE__SECRET_ACCESS_KEY
+access_key_id = ""
+secret_access_key = ""
+
+[tls]
+enabled = false            # set true after pointing a domain here
+contact_email = ""
+TOML
+  chmod 640 "$CONFIG_DIR/config.toml"
+  chown root:ruskery "$CONFIG_DIR/config.toml" 2>/dev/null || true
+fi
+
+# ── systemd service ──────────────────────────────────────────────
+if command -v systemctl >/dev/null 2>&1; then
+  log "installing systemd service"
+  curl -fsSL "$base/ruskery.service" -o "$SERVICE" 2>/dev/null || cat > "$SERVICE" <<'UNIT'
+[Unit]
+Description=ruskery container registry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ruskery
+Group=ruskery
+ExecStart=/usr/local/bin/ruskery --config /etc/ruskery/config.toml serve
+Restart=on-failure
+RestartSec=2s
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ruskery
+StateDirectory=ruskery
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable ruskery >/dev/null 2>&1 || true
+  log "starting ruskery"
+  systemctl restart ruskery || log "could not start yet — finish editing $CONFIG_DIR/config.toml, then: systemctl restart ruskery"
+fi
+
+cat <<EOF
+
+ruskery $VERSION installed.
+
+  Binary : $PREFIX/ruskery
+  Config : $CONFIG_DIR/config.toml   (set your Tigris bucket + keys)
+  Data   : $DATA_DIR
+
+Next steps:
+  1. Edit $CONFIG_DIR/config.toml (Tigris bucket + credentials).
+  2. systemctl restart ruskery
+  3. Open http://<server> and complete the setup wizard.
+  4. Add your domain in Settings → Domains & TLS to enable HTTPS.
+
+Logs: journalctl -u ruskery -f
+EOF

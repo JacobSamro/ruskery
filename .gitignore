@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+*.db
+*.db-shm
+*.db-wal
+.env
+config.toml
+config.local.toml
+
+# web (Nuxt)
+web/node_modules
+web/.output
+web/.nuxt
+web/dist
+.DS_Store
