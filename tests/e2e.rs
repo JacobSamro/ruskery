@@ -627,6 +627,56 @@ async fn end_to_end() {
     assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
     assert_eq!(h.get("x-frame-options").unwrap(), "DENY");
 
+    // The dashboard CSP must whitelist its own inline bootstrap script by hash,
+    // or the SPA fails to boot (Nuxt's `window.__NUXT__` script is blocked under
+    // a bare `script-src 'self'`). This is a regression guard for that outage.
+    {
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
+        let csp = h
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("script-src 'self'"));
+        assert!(
+            !csp.contains("'unsafe-inline'; script") || csp.contains("script-src 'self' 'sha256-"),
+            "script-src must not rely on 'unsafe-inline'"
+        );
+        let body = root.text().await.unwrap();
+        // Every executable inline script in the served HTML must be covered by a
+        // matching 'sha256-…' token in the CSP.
+        let mut checked = 0;
+        let mut rest = body.as_str();
+        while let Some(s) = rest.find("<script") {
+            let after = &rest[s..];
+            let gt = after.find('>').unwrap();
+            let open = &after[..gt];
+            let bstart = s + gt + 1;
+            let end = rest[bstart..].find("</script>").unwrap();
+            let inner = &rest[bstart..bstart + end];
+            rest = &rest[bstart + end + "</script>".len()..];
+            let is_data = open.contains("type=") && open.contains("application/json");
+            if open.contains("src=") || is_data || inner.is_empty() {
+                continue;
+            }
+            let tok = format!(
+                "sha256-{}",
+                base64::engine::general_purpose::STANDARD.encode(Sha256::digest(inner.as_bytes()))
+            );
+            assert!(
+                csp.contains(&tok),
+                "inline script not whitelisted in CSP: {tok}\nscript: {inner}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 1,
+            "expected at least one inline script in dashboard HTML"
+        );
+    }
+
     // ── cross-repo blob mount ────────────────────────────────────────
     // The layer already exists in this org, so mounting it into another repo
     // is instant (201) without re-uploading.

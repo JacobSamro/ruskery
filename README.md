@@ -136,10 +136,10 @@ ruskery admin ...     # create-user / create-org / add-member / create-token
 ### Run with Docker
 
 Multi-arch images (`linux/amd64` + `linux/arm64`) are published to the GitHub
-Container Registry on every release — `ghcr.io/jacobsamro/ruskery`. Stable
-releases are tagged `latest`, `<major>.<minor>`, and the exact version; a
-prerelease (like the current `0.1.0-beta`) is published **only** under its exact
-version tag, so pin to it:
+Container Registry on every release — `ghcr.io/jacobsamro/ruskery`, tagged
+`latest`, `<major>.<minor>`, and the exact version (e.g. `0.2.0`). Pin to a
+version for reproducible deploys; `latest` always tracks the newest stable
+release:
 
 ```sh
 docker run -d --name ruskery -p 80:80 -p 443:443 \
@@ -147,7 +147,7 @@ docker run -d --name ruskery -p 80:80 -p 443:443 \
   -e RUSKERY_STORAGE__BUCKET=my-bucket \
   -e RUSKERY_STORAGE__ACCESS_KEY_ID=... \
   -e RUSKERY_STORAGE__SECRET_ACCESS_KEY=... \
-  ghcr.io/jacobsamro/ruskery:0.1.0-beta
+  ghcr.io/jacobsamro/ruskery:latest
 ```
 
 ## Architecture

@@ -31,12 +31,13 @@ pub fn router(state: AppState) -> Router {
             header::HeaderName::from_static("referrer-policy"),
             HeaderValue::from_static("no-referrer"),
         ))
+        // Strict default for every response. HTML responses override this in
+        // `crate::web` with a CSP that whitelists the dashboard's inline
+        // bootstrap script by hash (hence `if_not_present`, not `overriding`).
         .layer(SetResponseHeaderLayer::if_not_present(
-            header::HeaderName::from_static("content-security-policy"),
-            HeaderValue::from_static(
-                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
-                 script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'",
-            ),
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_str(&crate::web::csp_policy(&[]))
+                .expect("default CSP is valid header value"),
         ));
 
     let mut router = Router::new()

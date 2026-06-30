@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-30
+
+### Fixed
+
+- **Dashboard failed to load under the default Content-Security-Policy.** A bare
+  `script-src 'self'` blocked the Nuxt SPA's inline bootstrap script
+  (`window.__NUXT__ = …`), so the app never mounted (`Cannot read properties of
+  undefined (reading 'app')`). The server now computes the SHA-256 of each
+  executable inline script in the embedded `index.html` at serve time and emits
+  matching `'sha256-…'` tokens in the CSP for HTML responses — keeping a strict
+  `script-src 'self'` (no `'unsafe-inline'`) for every other response. The hashes
+  are derived from the shipped bytes, so they stay correct across rebuilds even
+  though Nuxt regenerates `buildId` each build.
+
+### Changed
+
+- CI: the `docker e2e` macOS leg now runs on an Intel runner (`macos-15-intel`)
+  with Colima. GitHub's Apple-silicon hosted runners are themselves VMs and
+  Apple's Hypervisor.framework forbids nested virtualization, so no Linux Docker
+  daemon can start there.
+
 ## [0.1.0-beta] - 2026-06-30
 
 First public beta. A self-contained, multi-tenant OCI/Docker registry in Rust,
