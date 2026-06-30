@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **OCI conformance suite failed under rate limiting.** The registry token
+  endpoint (`/v2/token`) shared the strict per-IP auth limiter (10/s, burst 20)
+  and returned a *plaintext* `429` body. Registry clients fetch a short-lived
+  token per request, so the conformance suite (and any docker client behind a
+  shared NAT / CI egress IP) tripped the limit almost immediately, and the
+  client choked trying to JSON-parse the plaintext token response — cascading
+  into 54 of 79 failed specs. `/v2/token` now has its own generous limiter
+  (50/s, burst 500) and all `429` responses carry a JSON body (the OCI
+  `{"errors":[…]}` schema on `/v2/token`). The strict limiter still guards the
+  human-facing dashboard login and first-run setup.
+
 ## [0.4.0] - 2026-07-01
 
 ### Fixed
