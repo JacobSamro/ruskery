@@ -36,7 +36,7 @@ self-contained binary with no runtime services to manage.
 ### 1. Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/master/install.sh | sudo sh
 ```
 
 This drops a self-contained binary at `/usr/local/bin/ruskery`, writes `/etc/ruskery/config.toml`, and

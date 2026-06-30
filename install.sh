@@ -1,7 +1,7 @@
 #!/bin/sh
 # ruskery one-line installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/master/install.sh | sh
 #
 # Downloads the matching binary (verified against SHA256SUMS), installs a
 # systemd service, and writes a starter config. Re-running upgrades in place.
