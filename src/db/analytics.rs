@@ -89,32 +89,6 @@ pub async fn snapshot_storage(db: &Db, day: &str) -> Result<()> {
     Ok(())
 }
 
-/// One-time backfill of push history from the audit log (`image.push` rows).
-/// Pull history doesn't exist pre-instrumentation, so it starts at zero.
-pub async fn backfill_pushes(db: &Db) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO usage_daily (day, org_id, repo, kind, count, bytes)
-         SELECT substr(ts, 1, 10), org_id, COALESCE(target, ''), 'manifest.push', COUNT(*), 0
-         FROM audit_log
-         WHERE action = 'image.push' AND org_id IS NOT NULL
-         GROUP BY substr(ts, 1, 10), org_id, target
-         ON CONFLICT(day, org_id, repo, kind) DO NOTHING",
-    )
-    .execute(db)
-    .await?;
-    sqlx::query(
-        "INSERT INTO usage_user_daily (day, org_id, user_id, kind, count, bytes)
-         SELECT substr(ts, 1, 10), org_id, actor_user_id, 'manifest.push', COUNT(*), 0
-         FROM audit_log
-         WHERE action = 'image.push' AND org_id IS NOT NULL AND actor_user_id IS NOT NULL
-         GROUP BY substr(ts, 1, 10), org_id, actor_user_id
-         ON CONFLICT(day, org_id, user_id, kind) DO NOTHING",
-    )
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
 // ───────────────────────── read side (dashboard) ─────────────────────────
 
 #[derive(Debug, Default, Serialize)]

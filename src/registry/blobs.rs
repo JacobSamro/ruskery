@@ -37,12 +37,28 @@ pub async fn head(state: &AppState, org_id: &str, digest: &str) -> Result<Respon
 }
 
 /// `GET /v2/<name>/blobs/<digest>` — redirect to a short-lived presigned URL.
-pub async fn get(state: &AppState, org_id: &str, digest: &str) -> Result<Response> {
-    if !db::content::blob_exists(state.db(), org_id, digest).await? {
-        return Err(blob_unknown());
-    }
+/// A single `blob_size` read serves both the existence check and the analytics
+/// `blob.serve` byte attribution (recorded here, not in the dispatch layer, so
+/// the hot path does just one DB read).
+pub async fn get(
+    state: &AppState,
+    org_id: &str,
+    repo: &str,
+    user_id: &str,
+    digest: &str,
+) -> Result<Response> {
+    let size = db::content::blob_size(state.db(), org_id, digest)
+        .await?
+        .ok_or_else(blob_unknown)?;
     let key = Storage::blob_key(org_id, digest);
     let url = state.storage().presign_get(&key).await?;
+    state.usage().record(
+        org_id,
+        repo,
+        Some(user_id),
+        crate::analytics::Kind::BlobServe,
+        size,
+    );
     Ok((
         StatusCode::TEMPORARY_REDIRECT,
         [

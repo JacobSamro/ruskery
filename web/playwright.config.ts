@@ -29,7 +29,9 @@ export default defineConfig({
   webServer: {
     command: "bash tests/e2e/run-server.sh",
     url: `${BASE_URL}/healthz`,
-    reuseExistingServer: !process.env.CI,
+    // Off by default so tests never run against a stray backend on this port;
+    // opt in explicitly during local iteration.
+    reuseExistingServer: !!process.env.E2E_REUSE_SERVER,
     timeout: 180_000,
     stdout: "pipe",
     stderr: "pipe",

@@ -217,7 +217,7 @@ async fn dispatch(
     let metric: Option<(crate::analytics::Kind, Option<String>)> = match (&parsed.op, &method) {
         (Op::Manifest(_), &Method::GET) => Some((crate::analytics::Kind::ManifestPull, None)),
         (Op::Manifest(_), &Method::PUT) => Some((crate::analytics::Kind::ManifestPush, None)),
-        (Op::Blob(d), &Method::GET) => Some((crate::analytics::Kind::BlobServe, Some(d.clone()))),
+        // blob.serve is recorded inside blobs::get (one DB read for size).
         (Op::UploadSession(_), &Method::PUT) | (Op::UploadStart, &Method::POST) => {
             uploads::query_param(&query, "digest")
                 .map(percent_decode)
@@ -265,7 +265,7 @@ async fn dispatch(
             _ => unsupported(),
         },
         Op::Blob(digest) => match method {
-            Method::GET => blobs::get(&state, &org.id, &digest).await,
+            Method::GET => blobs::get(&state, &org.id, &repo_name, &claims.sub, &digest).await,
             Method::HEAD => blobs::head(&state, &org.id, &digest).await,
             Method::DELETE => blobs::delete(&state, &org.id, &digest).await,
             _ => unsupported(),

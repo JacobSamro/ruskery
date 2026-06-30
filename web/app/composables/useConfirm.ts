@@ -23,6 +23,11 @@ let resolver: ((value: boolean) => void) | null = null;
 
 export function useConfirm() {
   function confirm(opts: ConfirmOptions): Promise<boolean> {
+    // Cancel any still-pending confirmation so its promise never hangs.
+    if (resolver) {
+      resolver(false);
+      resolver = null;
+    }
     state.title = opts.title ?? "Are you sure?";
     state.message = opts.message;
     state.confirmText = opts.confirmText ?? "Confirm";

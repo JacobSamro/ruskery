@@ -155,16 +155,6 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(gc::background(state.clone(), gc_interval));
 
             if analytics_enabled {
-                // One-time backfill of push history from the audit log.
-                if db::settings::get(state.db(), "analytics_backfilled")
-                    .await?
-                    .is_none()
-                {
-                    db::analytics::backfill_pushes(state.db()).await.ok();
-                    db::settings::set(state.db(), "analytics_backfilled", "1")
-                        .await
-                        .ok();
-                }
                 tokio::spawn(analytics::flush_loop(state.clone(), rollup_secs));
             }
 

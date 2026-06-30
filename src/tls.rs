@@ -2,12 +2,15 @@
 //!
 //! The certificate domain set is sourced from the `domains` table, so adding a
 //! domain in the dashboard makes the server reload and provision a cert for it
-//! (once its DNS points here) without a restart. Port 80 only redirects to
-//! HTTPS — the ALPN challenge is answered on 443.
+//! (once its DNS points here) without a restart. On :80, requests for a
+//! configured domain are redirected to HTTPS while other hosts (e.g. the raw IP)
+//! are still served, so adding a domain can't lock the operator out; the
+//! TLS-ALPN-01 challenge is answered on 443.
 
 use axum::{
     extract::Request,
     http::{header, StatusCode},
+    middleware::Next,
     response::{IntoResponse, Redirect, Response},
     Router,
 };
@@ -52,10 +55,17 @@ pub async fn serve(state: AppState, app: Router) -> anyhow::Result<()> {
             continue;
         }
 
-        // A domain is configured: redirect :80 → HTTPS and serve ACME-managed
-        // certificates on :443.
+        // A domain is configured: on :80 redirect *configured-domain* hosts to
+        // HTTPS but keep serving the app for everything else (e.g. the raw IP),
+        // so adding a domain whose DNS/cert isn't ready can't lock the operator
+        // out. Serve ACME-managed certificates on :443.
         tracing::info!(?domains, "starting ACME TLS listener");
-        let redirect = tokio::spawn(redirect_server(http_addr.clone(), public_url.clone()));
+        let redirect = tokio::spawn(http_server(
+            http_addr.clone(),
+            app.clone(),
+            domains.clone(),
+            public_url.clone(),
+        ));
         tokio::select! {
             res = run_acme(&state, &https_addr, app.clone(), domains) => {
                 if let Err(e) = res {
@@ -148,20 +158,38 @@ async fn run_acme(
     }
 }
 
-/// Plain-HTTP server that 308-redirects every request to its HTTPS equivalent.
-async fn redirect_server(addr: String, public_url: String) {
-    let app = Router::new().fallback(move |req: Request| {
-        let public_url = public_url.clone();
-        async move { redirect_to_https(req, &public_url) }
-    });
+/// Plain-HTTP server for when domains are configured: requests whose `Host` is a
+/// configured domain are 308-redirected to HTTPS; all other hosts (e.g. the raw
+/// IP) are served the app normally, so the operator can't be locked out before a
+/// domain's DNS/cert is ready.
+async fn http_server(addr: String, app: Router, domains: Vec<String>, public_url: String) {
+    let domain_set: std::collections::HashSet<String> = domains.into_iter().collect();
+    let app = app.layer(axum::middleware::from_fn(
+        move |req: Request, next: Next| {
+            let domains = domain_set.clone();
+            let public_url = public_url.clone();
+            async move {
+                let host = req
+                    .headers()
+                    .get(header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|h| h.split(':').next().unwrap_or(h).to_string());
+                match host {
+                    Some(h) if domains.contains(&h) => redirect_to_https(req, &public_url),
+                    _ => next.run(req).await,
+                }
+            }
+        },
+    ));
     match TcpListener::bind(&addr).await {
         Ok(listener) => {
-            tracing::info!(%addr, "ruskery listening (http→https redirect)");
-            if let Err(e) = axum::serve(listener, app).await {
-                tracing::error!(error = %e, "http redirect server failed");
+            tracing::info!(%addr, "ruskery listening (http; configured domains redirect to https)");
+            let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            if let Err(e) = axum::serve(listener, svc).await {
+                tracing::error!(error = %e, "http server failed");
             }
         }
-        Err(e) => tracing::error!(error = %e, %addr, "failed to bind http redirect listener"),
+        Err(e) => tracing::error!(error = %e, %addr, "failed to bind http listener"),
     }
 }
 

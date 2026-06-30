@@ -94,11 +94,18 @@ impl UsageCollector {
         }
     }
 
-    /// Drain the in-memory counters into the rollup tables.
+    /// Drain the in-memory counters into the rollup tables. On a (transient) DB
+    /// error the drained counts are merged back so they're retried next flush
+    /// rather than lost.
     pub async fn flush(&self, db: &Db) -> Result<()> {
         let repo_rows = drain(&self.repo);
         let user_rows = drain(&self.user);
-        db::analytics::flush_batch(db, &repo_rows, &user_rows).await
+        if let Err(e) = db::analytics::flush_batch(db, &repo_rows, &user_rows).await {
+            requeue(&self.repo, repo_rows);
+            requeue(&self.user, user_rows);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Take the daily storage snapshot once per day.
@@ -122,6 +129,18 @@ fn bump(map: &DashMap<Key, Counter>, key: Key, bytes: i64) {
             c.bytes += bytes;
         })
         .or_insert(Counter { count: 1, bytes });
+}
+
+/// Merge drained rows back into a map (used to retry after a failed flush).
+fn requeue(map: &DashMap<Key, Counter>, rows: Vec<db::analytics::RepoRow>) {
+    for (day, scope, name, kind, count, bytes) in rows {
+        map.entry((day, scope, name, kind))
+            .and_modify(|c| {
+                c.count += count;
+                c.bytes += bytes;
+            })
+            .or_insert(Counter { count, bytes });
+    }
 }
 
 /// Remove and return every counter as a rollup row tuple.
