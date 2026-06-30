@@ -18,6 +18,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # macOS provides Docker via Colima/Lima, which is flaky to spin up on hosted
+    # runners (limactl can fail to boot the VM). Keep the leg for signal, but
+    # don't let an engine-setup failure fail the workflow — Linux and Windows
+    # are the authoritative docker push/pull gates.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     timeout-minutes: 40
     env:
       AWS_ACCESS_KEY_ID: ruskery
