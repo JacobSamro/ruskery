@@ -41,6 +41,11 @@ curl -fsSL https://raw.githubusercontent.com/jacobsamro/ruskery/main/install.sh 
 This drops a self-contained binary at `/usr/local/bin/ruskery`, writes `/etc/ruskery/config.toml`, and
 installs + enables a `ruskery` systemd service. (Prefer containers? See [Docker](#run-with-docker).)
 
+**Upgrading is the same command.** Re-running the installer fetches the latest release,
+replaces the binary, **keeps your config and data**, applies any new database migrations,
+and restarts the service. Pin a version with `RUSKERY_VERSION=v0.2.0` if you'd rather not
+track latest.
+
 ### 2. Point it at a Tigris bucket
 
 Edit `/etc/ruskery/config.toml` (or use environment variables) with your bucket and keys, then:

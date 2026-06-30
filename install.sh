@@ -45,7 +45,17 @@ if [ "$VERSION" = "latest" ]; then
     | grep -m1 '"tag_name"' | cut -d'"' -f4)"
   [ -n "$VERSION" ] || err "could not determine latest version"
 fi
-log "installing ruskery $VERSION ($arch)"
+
+# Detect an existing install so we can report (and behave like) an upgrade.
+OLD_VERSION=""
+if [ -x "$PREFIX/ruskery" ]; then
+  OLD_VERSION="$("$PREFIX/ruskery" --version 2>/dev/null | awk '{print $2}')"
+fi
+if [ -n "$OLD_VERSION" ]; then
+  log "upgrading ruskery $OLD_VERSION -> $VERSION ($arch)"
+else
+  log "installing ruskery $VERSION ($arch)"
+fi
 
 base="https://github.com/${REPO}/releases/download/${VERSION}"
 tmp="$(mktemp -d)"
@@ -105,6 +115,16 @@ TOML
   chown root:ruskery "$CONFIG_DIR/config.toml" 2>/dev/null || true
 fi
 
+# ── database migrations ──────────────────────────────────────────
+# `serve` also migrates on start, but run it now (as the ruskery user, so the
+# DB file keeps the right owner) so an upgrade's schema changes land before the
+# service comes back up. Idempotent and safe to repeat.
+if id ruskery >/dev/null 2>&1 && command -v su >/dev/null 2>&1; then
+  log "applying database migrations"
+  su -s /bin/sh ruskery -c "'$PREFIX/ruskery' --config '$CONFIG_DIR/config.toml' migrate" \
+    >/dev/null 2>&1 || log "migrations will run on next service start"
+fi
+
 # ── systemd service ──────────────────────────────────────────────
 if command -v systemctl >/dev/null 2>&1; then
   log "installing systemd service"
@@ -138,7 +158,26 @@ UNIT
   systemctl restart ruskery || log "could not start yet — finish editing $CONFIG_DIR/config.toml, then: systemctl restart ruskery"
 fi
 
-cat <<EOF
+if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$VERSION" ]; then
+  cat <<EOF
+
+ruskery upgraded: $OLD_VERSION -> $VERSION
+
+  Binary : $PREFIX/ruskery   (replaced)
+  Config : $CONFIG_DIR/config.toml   (kept)
+  Data   : $DATA_DIR   (kept; migrations applied)
+
+The service was restarted on the new version. Logs: journalctl -u ruskery -f
+EOF
+elif [ -n "$OLD_VERSION" ]; then
+  cat <<EOF
+
+ruskery is already at $VERSION — reinstalled and restarted.
+
+Logs: journalctl -u ruskery -f
+EOF
+else
+  cat <<EOF
 
 ruskery $VERSION installed.
 
@@ -154,3 +193,4 @@ Next steps:
 
 Logs: journalctl -u ruskery -f
 EOF
+fi
