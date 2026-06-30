@@ -80,9 +80,16 @@ async fn run_acme(
     app: Router,
     domains: Vec<String>,
 ) -> anyhow::Result<()> {
-    let tls = &state.config().tls;
-    let mut acme = AcmeConfig::new(domains)
-        .contact_push(format!("mailto:{}", tls.contact_email))
+    let tls = state.config().tls.clone();
+    // Contact email is editable live in the dashboard (DB wins over config).
+    let contact = db::settings::effective_contact_email(state.db(), &tls.contact_email)
+        .await
+        .unwrap_or_else(|_| tls.contact_email.clone());
+    let mut builder = AcmeConfig::new(domains);
+    if !contact.is_empty() {
+        builder = builder.contact_push(format!("mailto:{contact}"));
+    }
+    let mut acme = builder
         .cache(DirCache::new(tls.cache_dir.clone()))
         .directory_lets_encrypt(!tls.staging)
         .state();

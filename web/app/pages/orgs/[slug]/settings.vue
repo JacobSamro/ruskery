@@ -113,12 +113,31 @@ const domains = ref<DomainRow[]>([]);
 const tlsEnabled = ref(false);
 const newDomain = ref("");
 const domainError = ref("");
+const contactEmail = ref("");
+const contactSaved = ref(false);
+const contactError = ref("");
 
 async function loadDomains() {
   if (!me.value?.user.is_admin) return;
-  const d = await api.get<{ domains: DomainRow[]; tls_enabled: boolean }>("/api/v1/domains");
+  const d = await api.get<{
+    domains: DomainRow[];
+    tls_enabled: boolean;
+    contact_email: string;
+  }>("/api/v1/domains");
   domains.value = d.domains;
   tlsEnabled.value = d.tls_enabled;
+  contactEmail.value = d.contact_email ?? "";
+}
+
+async function saveContactEmail() {
+  contactError.value = "";
+  contactSaved.value = false;
+  try {
+    await api.put("/api/v1/settings/tls", { contact_email: contactEmail.value.trim() });
+    contactSaved.value = true;
+  } catch (e) {
+    contactError.value = apiErrorMessage(e);
+  }
 }
 
 async function addDomain() {
@@ -317,13 +336,34 @@ docker push {{ host }}/{{ slug }}/my-image:latest</code></pre>
           class="mb-4 flex items-start gap-2 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-sm text-[var(--color-muted)]"
         >
           <UiIcon name="shield" :size="16" class="mt-0.5" />
-          <span>Automatic TLS is off. Set <code class="text-[var(--color-fg)]">tls.enabled = true</code> in the config and restart to provision certificates.</span>
+          <span>Automatic TLS is disabled in this instance's config. Set <code class="text-[var(--color-fg)]">tls.enabled = true</code> (it's on by default) and restart to provision certificates.</span>
         </div>
 
         <p class="mb-3 text-sm text-[var(--color-muted)]">
           Point an <span class="font-mono text-[var(--color-fg)]">A</span> record for your domain at this
           server's IP, then add it below. ruskery requests a certificate once DNS resolves here.
         </p>
+
+        <div class="mb-4">
+          <label class="text-sm font-medium">
+            Let's Encrypt contact email
+            <span class="text-[var(--color-muted)]">(for expiry notices — recommended)</span>
+          </label>
+          <div class="mt-1 flex gap-2">
+            <UiInput
+              v-model="contactEmail"
+              type="email"
+              placeholder="admin@yourcompany.com"
+              class="flex-1"
+              @input="contactSaved = false"
+            />
+            <UiButton variant="outline" @click="saveContactEmail">Save</UiButton>
+          </div>
+          <p v-if="contactError" class="mt-1 text-sm text-red-400">{{ contactError }}</p>
+          <p v-else-if="contactSaved" class="mt-1 text-sm text-[var(--color-muted)]">
+            Saved — used when registering with Let's Encrypt.
+          </p>
+        </div>
 
         <div class="mb-4 flex gap-2">
           <UiInput v-model="newDomain" placeholder="registry.yourcompany.com" class="flex-1" />

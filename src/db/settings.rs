@@ -64,6 +64,15 @@ pub async fn effective_storage(
     Ok(cfg)
 }
 
+/// The ACME contact email, preferring the dashboard-saved value over the
+/// bootstrap config. Empty string means "none set".
+pub async fn effective_contact_email(db: &Db, base: &str) -> anyhow::Result<String> {
+    match get(db, "tls_contact_email").await? {
+        Some(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
+        _ => Ok(base.trim().to_string()),
+    }
+}
+
 /// Return the instance signing secret, generating and persisting a fresh 32-byte
 /// random key on first run. A key from config (if non-empty) always wins.
 pub async fn ensure_secret_key(db: &Db, configured: &str) -> anyhow::Result<Vec<u8>> {

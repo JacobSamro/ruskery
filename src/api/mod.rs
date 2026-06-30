@@ -77,6 +77,10 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/settings/oauth",
             get(get_oauth_settings).put(update_oauth_settings),
         )
+        .route(
+            "/api/v1/settings/tls",
+            get(get_tls_settings).put(update_tls_settings),
+        )
 }
 
 // ───────────────────────── helpers ─────────────────────────
@@ -1013,10 +1017,60 @@ async fn list_domains(
         return Err(Error::Forbidden);
     }
     let domains = db::domains::list(state.db()).await?;
-    let tls_enabled = state.config().tls.enabled;
-    Ok(json_ok(
-        json!({ "domains": domains, "tls_enabled": tls_enabled }),
-    ))
+    let tls = &state.config().tls;
+    let contact_email =
+        db::settings::effective_contact_email(state.db(), &tls.contact_email).await?;
+    Ok(json_ok(json!({
+        "domains": domains,
+        "tls_enabled": tls.enabled,
+        "contact_email": contact_email,
+    })))
+}
+
+#[derive(Deserialize)]
+struct TlsUpdate {
+    /// ACME (Let's Encrypt) contact email used for expiry notices.
+    contact_email: String,
+}
+
+async fn get_tls_settings(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let tls = &state.config().tls;
+    let contact_email =
+        db::settings::effective_contact_email(state.db(), &tls.contact_email).await?;
+    Ok(json_ok(json!({
+        "enabled": tls.enabled,
+        "staging": tls.staging,
+        "contact_email": contact_email,
+    })))
+}
+
+async fn update_tls_settings(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Json(req): Json<TlsUpdate>,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let email = req.contact_email.trim();
+    // Light validation: empty clears it; otherwise require a plausible address.
+    if !email.is_empty() && (!email.contains('@') || email.contains(char::is_whitespace)) {
+        return Err(Error::bad_request("invalid contact email"));
+    }
+    db::settings::set(state.db(), "tls_contact_email", email).await?;
+    db::audit::record(state.db(), Some(&user.id), None, "tls.update", None, None)
+        .await
+        .ok();
+    // Pick up the new email on the next ACME (re)load (used when registering a
+    // fresh Let's Encrypt account, e.g. before the first certificate).
+    state.notify_domains_changed();
+    Ok(json_ok(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

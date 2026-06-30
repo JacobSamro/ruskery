@@ -605,6 +605,46 @@ async fn end_to_end() {
     assert_eq!(domains["domains"][0]["domain"], "registry.example.com");
     assert_eq!(domains["domains"][0]["status"], "pending");
 
+    // ── ACME contact email is settable from the dashboard ─────────────
+    // Invalid address is rejected.
+    let bad_email = dash
+        .put(format!("{base}/api/v1/settings/tls"))
+        .json(&json!({"contact_email":"not-an-email"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        bad_email.status(),
+        400,
+        "invalid contact email must be rejected"
+    );
+    // A valid address persists and is reflected by both endpoints.
+    let set_email = dash
+        .put(format!("{base}/api/v1/settings/tls"))
+        .json(&json!({"contact_email":"ops@example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(set_email.status(), 200);
+    let tls_settings: serde_json::Value = dash
+        .get(format!("{base}/api/v1/settings/tls"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tls_settings["contact_email"], "ops@example.com");
+    let domains2: serde_json::Value = dash
+        .get(format!("{base}/api/v1/domains"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(domains2["contact_email"], "ops@example.com");
+
     // ── audit log records the push ────────────────────────────────────
     let audit: serde_json::Value = dash
         .get(format!("{base}/api/v1/orgs/acme/audit"))
