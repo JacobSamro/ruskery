@@ -14,7 +14,14 @@ const orgs = computed(() => me.value?.orgs ?? []);
 const scopeType = ref<"all" | "org" | "repo">("all");
 const scopeOrg = ref("");
 const scopeRepo = ref("");
+const scopePerm = ref<"admin" | "push" | "pull">("admin");
 const repos = ref<RepoSummary[]>([]);
+
+const PERM_LABEL: Record<string, string> = {
+  admin: "full",
+  push: "read & write",
+  pull: "read-only",
+};
 
 watch([scopeType, scopeOrg], async () => {
   if ((scopeType.value === "org" || scopeType.value === "repo") && !scopeOrg.value) {
@@ -38,7 +45,7 @@ async function load() {
 onMounted(load);
 
 async function create() {
-  const body: Record<string, string> = { name: newName.value };
+  const body: Record<string, string> = { name: newName.value, permission: scopePerm.value };
   if (scopeType.value === "org" && scopeOrg.value) body.org = scopeOrg.value;
   if (scopeType.value === "repo" && scopeOrg.value && scopeRepo.value) {
     body.org = scopeOrg.value;
@@ -68,6 +75,7 @@ function closeCreate() {
   scopeType.value = "all";
   scopeOrg.value = "";
   scopeRepo.value = "";
+  scopePerm.value = "admin";
 }
 </script>
 
@@ -94,6 +102,7 @@ function closeCreate() {
           <tr class="border-b border-[var(--color-border)]">
             <th class="px-3 py-2 font-medium">Name</th>
             <th class="px-3 py-2 font-medium">Scope</th>
+            <th class="px-3 py-2 font-medium">Permission</th>
             <th class="px-3 py-2 font-medium">Token</th>
             <th class="px-3 py-2 font-medium">Last used</th>
             <th class="px-3 py-2"></th>
@@ -107,6 +116,7 @@ function closeCreate() {
                 {{ t.scope === "all" ? "all access" : t.scope }}
               </UiBadge>
             </td>
+            <td class="px-3 py-3 text-[var(--color-muted)]">{{ PERM_LABEL[t.max_perm] || t.max_perm }}</td>
             <td class="px-3 py-3 font-mono text-xs text-[var(--color-muted)]">{{ t.token_prefix }}…</td>
             <td class="px-3 py-3 text-[var(--color-muted)]">{{ t.last_used_at ? timeAgo(t.last_used_at) : "never" }}</td>
             <td class="px-3 py-3 text-right">
@@ -149,6 +159,19 @@ function closeCreate() {
             <option value="org">A single organization</option>
             <option value="repo">A single repository</option>
           </select>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm font-medium">Permission</label>
+          <select
+            v-model="scopePerm"
+            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
+          >
+            <option value="admin">Full (read, write, delete)</option>
+            <option value="push">Read &amp; write (pull + push)</option>
+            <option value="pull">Read-only (pull)</option>
+          </select>
+          <p class="text-xs text-[var(--color-muted)]">Caps the token below your own access; never grants more.</p>
         </div>
 
         <div v-if="scopeType !== 'all'" class="flex flex-col gap-1.5">

@@ -58,6 +58,8 @@ export interface Token {
   created_at: string;
   /** "all", "<org>", or "<org>/<repo>". */
   scope: string;
+  /** Permission cap: "pull", "push", or "admin". */
+  max_perm: string;
 }
 
 export function useApi() {

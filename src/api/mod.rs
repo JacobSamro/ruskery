@@ -588,6 +588,9 @@ struct CreateTokenReq {
     /// Optional repo name (within `org`) to scope the token to a single repo.
     #[serde(default)]
     repo: Option<String>,
+    /// Optional permission cap: "pull", "push", or "admin" (default).
+    #[serde(default)]
+    permission: Option<String>,
 }
 
 async fn create_token(
@@ -612,6 +615,13 @@ async fn create_token(
         _ => ("all".to_string(), None, None),
     };
 
+    let max_perm = match req.permission.as_deref() {
+        None | Some("admin") => "admin",
+        Some("push") => "push",
+        Some("pull") => "pull",
+        Some(_) => return Err(Error::bad_request("invalid permission (pull|push|admin)")),
+    };
+
     let plaintext = db::users::create_pat(
         state.db(),
         &user.id,
@@ -619,6 +629,7 @@ async fn create_token(
         &kind,
         org_id.as_deref(),
         repo_id.as_deref(),
+        max_perm,
     )
     .await?;
     Ok(json_ok(

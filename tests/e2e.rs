@@ -302,6 +302,49 @@ async fn end_to_end() {
         .iter()
         .any(|t| t["scope"] == "acme/app"));
 
+    // ── permission-capped tokens ─────────────────────────────────────
+    // A pull-capped token can read but not write, even though its owner can push.
+    let pull_pat = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "pull-only", "permission": "pull" }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pull_jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pull_pat,
+        "repository:acme/app:pull,push",
+    )
+    .await;
+    assert_eq!(
+        reg.get(format!("{base}/v2/acme/app/manifests/v1"))
+            .bearer_auth(&pull_jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200,
+        "pull-capped token may read"
+    );
+    assert_eq!(
+        reg.post(format!("{base}/v2/acme/app/blobs/uploads/"))
+            .bearer_auth(&pull_jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401,
+        "pull-capped token must not be able to push"
+    );
+
     // ── dashboard: users, members, teams ─────────────────────────────
     let mk_user = dash
         .post(format!("{base}/api/v1/users"))

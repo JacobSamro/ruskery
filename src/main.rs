@@ -98,6 +98,9 @@ enum AdminCommand {
         /// Scope the token to a repo (requires --org).
         #[arg(long)]
         repo: Option<String>,
+        /// Permission cap: pull | push | admin.
+        #[arg(long, default_value = "admin")]
+        permission: String,
     },
 }
 
@@ -198,7 +201,11 @@ async fn run_admin(pool: &db::Db, cmd: AdminCommand) -> anyhow::Result<()> {
             name,
             org,
             repo,
+            permission,
         } => {
+            if !matches!(permission.as_str(), "pull" | "push" | "admin") {
+                return Err(anyhow::anyhow!("permission must be pull|push|admin"));
+            }
             let user = db::users::find_by_login(pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user not found"))?;
@@ -227,6 +234,7 @@ async fn run_admin(pool: &db::Db, cmd: AdminCommand) -> anyhow::Result<()> {
                 kind,
                 org_id.as_deref(),
                 repo_id.as_deref(),
+                &permission,
             )
             .await?;
             println!("{token}");

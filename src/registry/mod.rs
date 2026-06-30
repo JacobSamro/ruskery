@@ -307,10 +307,11 @@ async fn token_endpoint(
         return auth::challenge(&state, &headers, None);
     };
 
-    let (user, token_scope) = match resolve_user(&state, &creds.username, &creds.password).await {
-        Some(u) => u,
-        None => return auth::challenge(&state, &headers, None),
-    };
+    let (user, token_scope, cap) =
+        match resolve_user(&state, &creds.username, &creds.password).await {
+            Some(u) => u,
+            None => return auth::challenge(&state, &headers, None),
+        };
 
     let requested = parse_scopes(query.as_deref().unwrap_or(""));
     let service = auth::service_name(&state, &headers);
@@ -326,6 +327,7 @@ async fn token_endpoint(
             &scope.name,
             &scope.actions,
             &token_scope,
+            cap,
         )
         .await
         {
@@ -360,11 +362,12 @@ async fn resolve_user(
     state: &AppState,
     username: &str,
     secret: &str,
-) -> Option<(crate::models::User, crate::models::TokenScope)> {
+) -> Option<(crate::models::User, crate::models::TokenScope, Permission)> {
     if !username.is_empty() {
         if let Ok(Some(u)) = db::users::find_by_login(state.db(), username).await {
             if password::verify_password(secret, &u.password_hash) {
-                return Some((u, crate::models::TokenScope::All));
+                // An account-password login is unscoped and uncapped.
+                return Some((u, crate::models::TokenScope::All, Permission::Admin));
             }
         }
     }

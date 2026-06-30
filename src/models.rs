@@ -88,9 +88,4 @@ impl Permission {
             _ => None,
         }
     }
-
-    /// Whether this permission satisfies a required level.
-    pub fn allows(self, required: Permission) -> bool {
-        self >= required
-    }
 }

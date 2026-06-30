@@ -40,14 +40,16 @@ impl Scope {
 }
 
 /// Decide which of the `requested` actions to grant on repository `name`
-/// (`<org-slug>/<repo>`) for `user_id`, further constrained by the access
-/// token's `scope`. Returns the granted subset (owner RBAC ∩ token scope).
+/// (`<org-slug>/<repo>`) for `user_id`, constrained by the token's resource
+/// `scope` and permission `cap`. Returns the granted subset
+/// (owner RBAC ∩ scope ∩ cap).
 pub async fn grant_repository(
     db: &Db,
     user_id: &str,
     name: &str,
     requested: &[String],
     scope: &TokenScope,
+    cap: Permission,
 ) -> Result<Vec<String>> {
     let Some((org_slug, repo_name)) = name.split_once('/') else {
         return Ok(vec![]);
@@ -58,7 +60,7 @@ pub async fn grant_repository(
 
     let repo = orgs::find_repo(db, &org.id, repo_name).await?;
 
-    // Enforce the token's scope before computing any grants.
+    // Enforce the token's resource scope before computing any grants.
     match scope {
         TokenScope::All => {}
         TokenScope::Org(oid) if *oid == org.id => {}
@@ -67,36 +69,37 @@ pub async fn grant_repository(
         _ => return Ok(vec![]),
     }
 
-    let mut granted = Vec::new();
-
-    match repo {
-        Some(repo) => {
-            let perm = orgs::repo_permission(db, &repo.id, &org.id, user_id).await?;
-            for action in requested {
-                let ok = match action.as_str() {
-                    "pull" => perm.allows(Permission::Pull),
-                    "push" => perm.allows(Permission::Push),
-                    "delete" => perm.allows(Permission::Admin),
-                    _ => false,
-                };
-                if ok {
-                    granted.push(action.clone());
-                }
-            }
-        }
+    // The owner's capability on the repository...
+    let capability = match &repo {
+        Some(repo) => orgs::repo_permission(db, &repo.id, &org.id, user_id).await?,
         None => {
-            // Repository does not exist yet. Only org owners/admins may create
-            // one (via push); pull/delete on a missing repo grant nothing.
+            // Repository does not exist yet; only org owners/admins may create
+            // one, which is a push-level capability (no delete on a new repo).
             let is_org_admin = orgs::org_role(db, &org.id, user_id)
                 .await?
                 .map(|r| r >= OrgRole::Admin)
                 .unwrap_or(false);
-            if is_org_admin && requested.iter().any(|a| a == "push") {
-                granted.push("push".to_string());
-                if requested.iter().any(|a| a == "pull") {
-                    granted.push("pull".to_string());
-                }
+            if is_org_admin {
+                Permission::Push
+            } else {
+                Permission::None
             }
+        }
+    };
+
+    // ...capped by the token's permission cap.
+    let effective = capability.min(cap);
+
+    let mut granted = Vec::new();
+    for action in requested {
+        let required = match action.as_str() {
+            "pull" => Permission::Pull,
+            "push" => Permission::Push,
+            "delete" => Permission::Admin,
+            _ => continue,
+        };
+        if effective >= required {
+            granted.push(action.clone());
         }
     }
 
