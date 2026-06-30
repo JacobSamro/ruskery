@@ -88,6 +88,16 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
           Organizations
         </NuxtLink>
 
+        <NuxtLink
+          v-if="me?.user.is_admin"
+          to="/settings"
+          :class="linkClass"
+          :active-class="activeClass"
+        >
+          <UiIcon name="settings" :size="16" />
+          Instance Settings
+        </NuxtLink>
+
         <NuxtLink to="/tokens" :class="linkClass" :active-class="activeClass">
           <UiIcon name="key" :size="16" />
           Access Tokens

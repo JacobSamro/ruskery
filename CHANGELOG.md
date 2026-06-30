@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Instance settings split out of the org settings page.** Storage, Domains &
+  TLS, Google sign-in, and Users are instance-wide (not per-org), so they now
+  live on a dedicated admin-only **Instance Settings** page (`/settings`) reached
+  from the sidebar. The org settings page (`/orgs/<slug>/settings`) now only
+  shows org-scoped cards. No API changes — same endpoints, clearer placement.
+
 ### Added
 
 - **Organizations view for super admins.** Instance admins now get an
