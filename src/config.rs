@@ -37,6 +37,7 @@ pub struct GcConfig {
     pub interval_secs: u64,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for GcConfig {
     fn default() -> Self {
         // Off by default; run `ruskery gc` manually or set an interval.
@@ -165,6 +166,7 @@ impl Default for TlsConfig {
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for Config {
     fn default() -> Self {
         Self {

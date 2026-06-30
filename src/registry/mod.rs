@@ -212,9 +212,9 @@ async fn dispatch(
         },
         Op::UploadStart => match method {
             Method::POST => {
-                let mount = uploads::query_param(&query, "mount").map(|m| percent_decode(m));
+                let mount = uploads::query_param(&query, "mount").map(percent_decode);
                 // A monolithic POST may carry ?digest= with the whole body.
-                let digest = uploads::query_param(&query, "digest").map(|d| percent_decode(d));
+                let digest = uploads::query_param(&query, "digest").map(percent_decode);
                 match digest {
                     Some(d) => start_then_finish(&state, &org.id, &name, body, &d).await,
                     None => uploads::start(&state, &org.id, &name, mount.as_deref()).await,
@@ -225,7 +225,7 @@ async fn dispatch(
         Op::UploadSession(uuid) => match method {
             Method::PATCH => uploads::patch(&state, &name, &uuid, body).await,
             Method::PUT => {
-                let digest = uploads::query_param(&query, "digest").map(|d| percent_decode(d));
+                let digest = uploads::query_param(&query, "digest").map(percent_decode);
                 match digest {
                     Some(d) => uploads::finish(&state, &name, &uuid, &d, body).await,
                     None => Err(Error::oci(

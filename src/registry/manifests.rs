@@ -25,6 +25,7 @@ fn is_digest(reference: &str) -> bool {
 
 /// `PUT /v2/<name>/manifests/<reference>` — store a manifest, tagging it if the
 /// reference is a tag.
+#[allow(clippy::too_many_arguments)]
 pub async fn put(
     state: &AppState,
     org: &Org,

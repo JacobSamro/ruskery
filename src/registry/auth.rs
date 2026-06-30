@@ -63,6 +63,7 @@ pub fn challenge(state: &AppState, headers: &HeaderMap, scope: Option<&str>) -> 
 /// Require that the request carries a bearer token granting `action` on
 /// repository `name`. On success returns the claims; on failure returns the
 /// `401` challenge response (with the needed scope) to send back.
+#[allow(clippy::result_large_err)] // Err is a ready-to-send Response, by design
 pub fn require(
     state: &AppState,
     headers: &HeaderMap,
