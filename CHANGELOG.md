@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **OCI distribution-spec conformance in CI.** A new workflow runs the official
+  conformance suite (pull, push, content-management, content-discovery) against a
+  real ruskery backed by RustFS.
+- **Tag listing pagination.** `GET /v2/<name>/tags/list` honours `?n=`/`?last=`
+  and emits a `Link: rel="next"` header, per the spec.
 - **Referrers API (OCI 1.1).** `GET /v2/<name>/referrers/<digest>` returns an
   image index of manifests whose `subject` is that digest (with `artifactType`
   filtering + `OCI-Filters-Applied`), and manifest pushes carrying a `subject`

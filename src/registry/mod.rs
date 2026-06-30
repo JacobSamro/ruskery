@@ -227,7 +227,11 @@ async fn dispatch(
     };
 
     let result = match parsed.op {
-        Op::TagsList => tags::list(&state, &org, &repo_name, &name).await,
+        Op::TagsList => {
+            let n = uploads::query_param(&query, "n").and_then(|v| v.parse().ok());
+            let last = uploads::query_param(&query, "last").map(percent_decode);
+            tags::list(&state, &org, &repo_name, &name, n, last.as_deref()).await
+        }
         Op::Referrers(subject) => match method {
             Method::GET => {
                 let at = uploads::query_param(&query, "artifactType").map(percent_decode);

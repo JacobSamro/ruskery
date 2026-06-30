@@ -322,6 +322,39 @@ async fn end_to_end() {
         );
     }
 
+    // ── tag listing pagination (?n= + Link, then ?last=) ─────────────
+    // Four tags now exist (arch1, arch2, multi, v1), lexically ordered.
+    let page1 = reg
+        .get(format!("{base}/v2/acme/app/tags/list?n=2"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        page1.headers().get("link").is_some(),
+        "first page must advertise a next-page Link"
+    );
+    let p1: serde_json::Value = page1.json().await.unwrap();
+    assert_eq!(p1["tags"].as_array().unwrap().len(), 2);
+    let last = p1["tags"][1].as_str().unwrap().to_string();
+    let p2: serde_json::Value = reg
+        .get(format!("{base}/v2/acme/app/tags/list?n=2&last={last}"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        p2["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t.as_str().unwrap() > last.as_str()),
+        "second page must continue strictly after `last`"
+    );
+
     // ── referrers (OCI 1.1) ──────────────────────────────────────────
     let referrer = json!({
         "schemaVersion": 2,
