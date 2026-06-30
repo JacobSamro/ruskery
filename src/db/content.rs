@@ -77,14 +77,26 @@ pub struct StoredManifest {
     pub content: Vec<u8>,
 }
 
-/// Store (or replace) a manifest and the set of blobs it references, atomically.
+/// Everything a manifest references, recorded for GC, multi-arch index integrity
+/// and the referrers API.
+#[derive(Default)]
+pub struct ManifestLinks<'a> {
+    /// Config + layer blob digests (image manifests).
+    pub blobs: &'a [String],
+    /// Child manifest digests (image indexes / manifest lists).
+    pub children: &'a [String],
+    /// `(subject_digest, artifact_type)` when the manifest carries a `subject`.
+    pub subject: Option<(&'a str, String)>,
+}
+
+/// Store (or replace) a manifest and everything it references, atomically.
 pub async fn put_manifest(
     db: &Db,
     repo_id: &str,
     digest: &str,
     media_type: &str,
     content: &[u8],
-    blob_refs: &[String],
+    links: &ManifestLinks<'_>,
 ) -> Result<()> {
     let now = now_rfc3339();
     let mut tx = db.begin().await?;
@@ -106,13 +118,13 @@ pub async fn put_manifest(
     .execute(&mut *tx)
     .await?;
 
+    // Re-record blob references.
     sqlx::query("DELETE FROM manifest_blobs WHERE repo_id = ? AND manifest_digest = ?")
         .bind(repo_id)
         .bind(digest)
         .execute(&mut *tx)
         .await?;
-
-    for blob in blob_refs {
+    for blob in links.blobs {
         sqlx::query(
             "INSERT INTO manifest_blobs (repo_id, manifest_digest, blob_digest)
              VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
@@ -124,8 +136,77 @@ pub async fn put_manifest(
         .await?;
     }
 
+    // Re-record child-manifest references (image index).
+    sqlx::query("DELETE FROM manifest_manifests WHERE repo_id = ? AND manifest_digest = ?")
+        .bind(repo_id)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await?;
+    for child in links.children {
+        sqlx::query(
+            "INSERT INTO manifest_manifests (repo_id, manifest_digest, child_digest)
+             VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(repo_id)
+        .bind(digest)
+        .bind(child)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Re-record this manifest's referrer link (its `subject`, if any).
+    sqlx::query("DELETE FROM manifest_referrers WHERE repo_id = ? AND referrer_digest = ?")
+        .bind(repo_id)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await?;
+    if let Some((subject, artifact_type)) = &links.subject {
+        sqlx::query(
+            "INSERT INTO manifest_referrers (repo_id, subject_digest, referrer_digest, artifact_type)
+             VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(repo_id)
+        .bind(subject)
+        .bind(digest)
+        .bind(artifact_type)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     tx.commit().await?;
     Ok(())
+}
+
+/// A manifest that refers to a subject (for the referrers API).
+pub struct Referrer {
+    pub digest: String,
+    pub media_type: String,
+    pub size: i64,
+    pub artifact_type: String,
+}
+
+/// Manifests in `repo_id` whose `subject` is `subject_digest`.
+pub async fn list_referrers(db: &Db, repo_id: &str, subject_digest: &str) -> Result<Vec<Referrer>> {
+    let rows: Vec<(String, String, i64, String)> = sqlx::query_as(
+        "SELECT m.digest, m.media_type, m.size, r.artifact_type
+         FROM manifest_referrers r
+         JOIN manifests m ON m.repo_id = r.repo_id AND m.digest = r.referrer_digest
+         WHERE r.repo_id = ? AND r.subject_digest = ?
+         ORDER BY m.created_at",
+    )
+    .bind(repo_id)
+    .bind(subject_digest)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(digest, media_type, size, artifact_type)| Referrer {
+            digest,
+            media_type,
+            size,
+            artifact_type,
+        })
+        .collect())
 }
 
 pub async fn get_manifest_by_digest(
@@ -191,6 +272,16 @@ pub async fn delete_manifest(db: &Db, repo_id: &str, digest: &str) -> Result<()>
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM manifest_blobs WHERE repo_id = ? AND manifest_digest = ?")
+        .bind(repo_id)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM manifest_manifests WHERE repo_id = ? AND manifest_digest = ?")
+        .bind(repo_id)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM manifest_referrers WHERE repo_id = ? AND referrer_digest = ?")
         .bind(repo_id)
         .bind(digest)
         .execute(&mut *tx)

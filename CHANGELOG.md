@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Referrers API (OCI 1.1).** `GET /v2/<name>/referrers/<digest>` returns an
+  image index of manifests whose `subject` is that digest (with `artifactType`
+  filtering + `OCI-Filters-Applied`), and manifest pushes carrying a `subject`
+  now echo the `OCI-Subject` header. This is what cosign signatures, SBOMs and
+  attestations use for discovery.
+- **Explicit multi-arch image index tracking.** An index's child manifests are
+  now recorded (`manifest_manifests`), making the index→child relationship
+  first-class — blob GC was already safe (children record their own blobs), and
+  this keeps a future manifest-level GC correct. Covered by an e2e that pushes
+  two children + an index, pulls all three, and checks referrers.
+
 ## [0.3.0] - 2026-07-01
 
 ### Added

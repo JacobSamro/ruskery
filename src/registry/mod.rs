@@ -57,6 +57,7 @@ async fn v2_base(State(state): State<AppState>, headers: HeaderMap) -> Response 
 enum Op {
     TagsList,
     Manifest(String),
+    Referrers(String),
     Blob(String),
     UploadStart,
     UploadSession(String),
@@ -90,6 +91,16 @@ fn parse_route(rest: &str) -> Option<Parsed> {
             name: name.to_string(),
             op: Op::TagsList,
         });
+    }
+    if let Some(i) = rest.rfind("/referrers/") {
+        let name = &rest[..i];
+        let digest = &rest[i + "/referrers/".len()..];
+        if !name.is_empty() && !digest.is_empty() {
+            return Some(Parsed {
+                name: name.to_string(),
+                op: Op::Referrers(digest.to_string()),
+            });
+        }
     }
     if let Some(i) = rest.rfind("/manifests/") {
         let name = &rest[..i];
@@ -167,6 +178,7 @@ async fn dispatch(
     // The action a request needs depends on the operation + method.
     let required = match (&parsed.op, &method) {
         (Op::TagsList, _) => Permission::Pull,
+        (Op::Referrers(_), _) => Permission::Pull,
         (Op::Manifest(_), &Method::GET | &Method::HEAD) => Permission::Pull,
         (Op::Manifest(_), &Method::PUT) => Permission::Push,
         (Op::Manifest(_), &Method::DELETE) => Permission::Admin,
@@ -216,6 +228,13 @@ async fn dispatch(
 
     let result = match parsed.op {
         Op::TagsList => tags::list(&state, &org, &repo_name, &name).await,
+        Op::Referrers(subject) => match method {
+            Method::GET => {
+                let at = uploads::query_param(&query, "artifactType").map(percent_decode);
+                manifests::referrers(&state, &org, &repo_name, &subject, at.as_deref()).await
+            }
+            _ => unsupported(),
+        },
         Op::Manifest(reference) => match method {
             Method::GET => manifests::get(&state, &org, &repo_name, &reference, false).await,
             Method::HEAD => manifests::get(&state, &org, &repo_name, &reference, true).await,

@@ -247,6 +247,153 @@ async fn end_to_end() {
         .iter()
         .any(|r| r == "acme/app"));
 
+    // ── multi-arch image index ───────────────────────────────────────
+    // Two distinct child manifests, then an index that references them.
+    let (child1, s1) = push_manifest(
+        &reg,
+        &base,
+        &jwt,
+        "acme/app",
+        &config_d,
+        config.len(),
+        &layer_d,
+        layer.len(),
+        "arch1",
+    )
+    .await;
+    let (child2, s2) = push_manifest(
+        &reg,
+        &base,
+        &jwt,
+        "acme/app",
+        &config_d,
+        config.len(),
+        &big_d,
+        big.len(),
+        "arch2",
+    )
+    .await;
+    assert_eq!(s1, 201);
+    assert_eq!(s2, 201);
+    assert_ne!(child1, child2, "children must be distinct manifests");
+
+    let index = json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest": child1, "size": 100,
+             "platform": {"architecture":"amd64","os":"linux"}},
+            {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest": child2, "size": 100,
+             "platform": {"architecture":"arm64","os":"linux"}}
+        ]
+    })
+    .to_string();
+    let put_idx = reg
+        .put(format!("{base}/v2/acme/app/manifests/multi"))
+        .header("content-type", "application/vnd.oci.image.index.v1+json")
+        .bearer_auth(&jwt)
+        .body(index)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put_idx.status(), 201, "index push");
+
+    let got_idx = reg
+        .get(format!("{base}/v2/acme/app/manifests/multi"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(got_idx.status(), 200);
+    assert_eq!(
+        got_idx.headers().get("content-type").unwrap(),
+        "application/vnd.oci.image.index.v1+json"
+    );
+    // Both children resolve by digest (a multi-arch pull then fetches the right one).
+    for child in [&child1, &child2] {
+        assert_eq!(
+            reg.get(format!("{base}/v2/acme/app/manifests/{child}"))
+                .bearer_auth(&jwt)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+    }
+
+    // ── referrers (OCI 1.1) ──────────────────────────────────────────
+    let referrer = json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "artifactType": "application/vnd.example.sbom",
+        "config": {"mediaType":"application/vnd.oci.image.config.v1+json","digest": config_d, "size": config.len()},
+        "layers": [{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest": layer_d, "size": layer.len()}],
+        "subject": {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest": manifest_d, "size": 100}
+    })
+    .to_string();
+    let referrer_digest = sha256_digest(referrer.as_bytes());
+    let put_ref = reg
+        .put(format!("{base}/v2/acme/app/manifests/{referrer_digest}"))
+        .header("content-type", "application/vnd.oci.image.manifest.v1+json")
+        .bearer_auth(&jwt)
+        .body(referrer)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put_ref.status(), 201, "referrer push");
+    assert_eq!(
+        put_ref.headers().get("oci-subject").unwrap(),
+        manifest_d.as_str(),
+        "OCI-Subject header echoes the subject"
+    );
+
+    let refs: serde_json::Value = reg
+        .get(format!("{base}/v2/acme/app/referrers/{manifest_d}"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refs["mediaType"], "application/vnd.oci.image.index.v1+json");
+    assert!(
+        refs["manifests"].as_array().unwrap().iter().any(|m| {
+            m["digest"] == referrer_digest && m["artifactType"] == "application/vnd.example.sbom"
+        }),
+        "referrer must be listed: {refs}"
+    );
+
+    // artifactType filter narrows the list and sets OCI-Filters-Applied.
+    let filtered = reg
+        .get(format!(
+            "{base}/v2/acme/app/referrers/{manifest_d}?artifactType=application/vnd.example.sbom"
+        ))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        filtered.headers().get("oci-filters-applied").unwrap(),
+        "artifactType"
+    );
+    let fbody: serde_json::Value = filtered.json().await.unwrap();
+    assert_eq!(fbody["manifests"].as_array().unwrap().len(), 1);
+    // A non-matching filter yields an empty index.
+    let empty: serde_json::Value = reg
+        .get(format!(
+            "{base}/v2/acme/app/referrers/{manifest_d}?artifactType=application/vnd.none"
+        ))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(empty["manifests"].as_array().unwrap().len(), 0);
+
     // ── scoped personal access tokens ────────────────────────────────
     // A token scoped to acme/app reaches it, but nothing else — even though its
     // owner (admin) has full access to the whole org.

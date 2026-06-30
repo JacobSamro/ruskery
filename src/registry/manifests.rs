@@ -62,6 +62,8 @@ pub async fn put(
     })?;
 
     let blob_refs = parse_blob_refs_value(&doc);
+    let child_refs = parse_child_refs(&doc);
+    let subject = parse_subject(&doc);
 
     // Ensure every referenced blob has actually been uploaded to this org.
     for r in &blob_refs {
@@ -80,15 +82,12 @@ pub async fn put(
         None => db::orgs::create_repo(state.db(), &org.id, repo_name).await?,
     };
 
-    db::content::put_manifest(
-        state.db(),
-        &repo.id,
-        &digest,
-        &media_type,
-        &body,
-        &blob_refs,
-    )
-    .await?;
+    let links = db::content::ManifestLinks {
+        blobs: &blob_refs,
+        children: &child_refs,
+        subject: subject.as_ref().map(|(d, at)| (d.as_str(), at.clone())),
+    };
+    db::content::put_manifest(state.db(), &repo.id, &digest, &media_type, &body, &links).await?;
 
     if !is_digest(reference) {
         db::content::upsert_tag(state.db(), &repo.id, reference, &digest).await?;
@@ -105,17 +104,25 @@ pub async fn put(
     .await
     .ok();
 
-    Ok((
+    let mut resp = (
         StatusCode::CREATED,
         [
             (header::LOCATION, format!("/v2/{name}/manifests/{digest}")),
             (
                 header::HeaderName::from_static("docker-content-digest"),
-                digest,
+                digest.clone(),
             ),
         ],
     )
-        .into_response())
+        .into_response();
+    // OCI 1.1: echo the subject digest so clients know referrers are supported.
+    if let Some((subject_digest, _)) = &subject {
+        if let Ok(v) = header::HeaderValue::from_str(subject_digest) {
+            resp.headers_mut()
+                .insert(header::HeaderName::from_static("oci-subject"), v);
+        }
+    }
+    Ok(resp)
 }
 
 /// `GET`/`HEAD /v2/<name>/manifests/<reference>`
@@ -181,6 +188,68 @@ pub async fn delete(
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
+/// `GET /v2/<name>/referrers/<digest>` (OCI 1.1) — an image index of the
+/// manifests whose `subject` is `<digest>`. Returns an empty index (200) when
+/// the repo or subject is unknown, per the spec. `artifact_type` filters the
+/// list and, when set, adds the `OCI-Filters-Applied` header.
+pub async fn referrers(
+    state: &AppState,
+    org: &Org,
+    repo_name: &str,
+    subject_digest: &str,
+    artifact_type: Option<&str>,
+) -> Result<Response> {
+    let refs = match db::orgs::find_repo(state.db(), &org.id, repo_name).await? {
+        Some(repo) => {
+            let mut refs =
+                db::content::list_referrers(state.db(), &repo.id, subject_digest).await?;
+            if let Some(at) = artifact_type {
+                refs.retain(|r| r.artifact_type == at);
+            }
+            refs
+        }
+        None => Vec::new(),
+    };
+
+    let manifests: Vec<serde_json::Value> = refs
+        .iter()
+        .map(|r| {
+            let mut entry = serde_json::json!({
+                "mediaType": r.media_type,
+                "digest": r.digest,
+                "size": r.size,
+            });
+            if !r.artifact_type.is_empty() {
+                entry["artifactType"] = serde_json::Value::String(r.artifact_type.clone());
+            }
+            entry
+        })
+        .collect();
+    let index = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": manifests,
+    });
+    let body = serde_json::to_vec(&index).unwrap_or_default();
+
+    let mut resp = (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "application/vnd.oci.image.index.v1+json",
+        )],
+        body,
+    )
+        .into_response();
+    if artifact_type.is_some() {
+        resp.headers_mut().insert(
+            header::HeaderName::from_static("oci-filters-applied"),
+            header::HeaderValue::from_static("artifactType"),
+        );
+    }
+    Ok(resp)
+}
+
 /// Collect the blob digests (config + layers) a manifest references. Manifest
 /// indexes (which reference other manifests, not blobs) yield no blob refs here.
 fn parse_blob_refs_value(v: &serde_json::Value) -> Vec<String> {
@@ -200,4 +269,34 @@ fn parse_blob_refs_value(v: &serde_json::Value) -> Vec<String> {
         }
     }
     refs
+}
+
+/// Child manifest digests referenced by an image index / manifest list.
+fn parse_child_refs(v: &serde_json::Value) -> Vec<String> {
+    v.get("manifests")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("digest").and_then(|d| d.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `subject` a manifest refers to (OCI 1.1), with its artifact type. The
+/// artifact type is `artifactType` when present, else the config media type
+/// (the OCI fallback for image manifests used as artifacts).
+fn parse_subject(v: &serde_json::Value) -> Option<(String, String)> {
+    let subject = v.get("subject")?.get("digest")?.as_str()?.to_string();
+    let artifact_type = v
+        .get("artifactType")
+        .and_then(|a| a.as_str())
+        .or_else(|| {
+            v.get("config")
+                .and_then(|c| c.get("mediaType"))
+                .and_then(|m| m.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    Some((subject, artifact_type))
 }
