@@ -9,6 +9,24 @@ const newName = ref("");
 const created = ref<string | null>(null);
 const copied = ref(false);
 
+// Scope selection for a new token.
+const orgs = computed(() => me.value?.orgs ?? []);
+const scopeType = ref<"all" | "org" | "repo">("all");
+const scopeOrg = ref("");
+const scopeRepo = ref("");
+const repos = ref<RepoSummary[]>([]);
+
+watch([scopeType, scopeOrg], async () => {
+  if ((scopeType.value === "org" || scopeType.value === "repo") && !scopeOrg.value) {
+    scopeOrg.value = orgs.value[0]?.slug ?? "";
+  }
+  if (scopeType.value === "repo" && scopeOrg.value) {
+    repos.value = (
+      await api.get<{ repositories: RepoSummary[] }>(`/api/v1/orgs/${scopeOrg.value}/repos`)
+    ).repositories;
+  }
+});
+
 async function load() {
   loading.value = true;
   try {
@@ -20,7 +38,13 @@ async function load() {
 onMounted(load);
 
 async function create() {
-  const res = await api.post<{ token: string }>("/api/v1/tokens", { name: newName.value });
+  const body: Record<string, string> = { name: newName.value };
+  if (scopeType.value === "org" && scopeOrg.value) body.org = scopeOrg.value;
+  if (scopeType.value === "repo" && scopeOrg.value && scopeRepo.value) {
+    body.org = scopeOrg.value;
+    body.repo = scopeRepo.value;
+  }
+  const res = await api.post<{ token: string }>("/api/v1/tokens", body);
   created.value = res.token;
   newName.value = "";
   await load();
@@ -41,6 +65,9 @@ function copyToken() {
 function closeCreate() {
   showCreate.value = false;
   created.value = null;
+  scopeType.value = "all";
+  scopeOrg.value = "";
+  scopeRepo.value = "";
 }
 </script>
 
@@ -49,7 +76,10 @@ function closeCreate() {
     <div class="mb-6 flex items-end justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Access Tokens</h1>
-        <p class="text-sm text-[var(--color-muted)]">Use a token as your password for <code class="text-[var(--color-fg)]">docker login</code>.</p>
+        <p class="text-sm text-[var(--color-muted)]">
+          Use a token as your password for <code class="text-[var(--color-fg)]">docker login</code>.
+          Scope a token to one org or repo to limit its reach.
+        </p>
       </div>
       <UiButton size="sm" @click="showCreate = true">
         <UiIcon name="plus" :size="14" /> New token
@@ -63,6 +93,7 @@ function closeCreate() {
         <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
           <tr class="border-b border-[var(--color-border)]">
             <th class="px-3 py-2 font-medium">Name</th>
+            <th class="px-3 py-2 font-medium">Scope</th>
             <th class="px-3 py-2 font-medium">Token</th>
             <th class="px-3 py-2 font-medium">Last used</th>
             <th class="px-3 py-2"></th>
@@ -71,6 +102,11 @@ function closeCreate() {
         <tbody>
           <tr v-for="t in tokens" :key="t.id" class="border-b border-[var(--color-border)] last:border-0">
             <td class="px-3 py-3 font-medium">{{ t.name }}</td>
+            <td class="px-3 py-3">
+              <UiBadge :variant="t.scope === 'all' ? 'default' : 'outline'">
+                {{ t.scope === "all" ? "all access" : t.scope }}
+              </UiBadge>
+            </td>
             <td class="px-3 py-3 font-mono text-xs text-[var(--color-muted)]">{{ t.token_prefix }}…</td>
             <td class="px-3 py-3 text-[var(--color-muted)]">{{ t.last_used_at ? timeAgo(t.last_used_at) : "never" }}</td>
             <td class="px-3 py-3 text-right">
@@ -102,6 +138,40 @@ function closeCreate() {
           <label class="text-sm font-medium">Name</label>
           <UiInput v-model="newName" placeholder="laptop" required />
         </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm font-medium">Scope</label>
+          <select
+            v-model="scopeType"
+            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
+          >
+            <option value="all">All my access</option>
+            <option value="org">A single organization</option>
+            <option value="repo">A single repository</option>
+          </select>
+        </div>
+
+        <div v-if="scopeType !== 'all'" class="flex flex-col gap-1.5">
+          <label class="text-sm font-medium">Organization</label>
+          <select
+            v-model="scopeOrg"
+            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
+          >
+            <option v-for="o in orgs" :key="o.slug" :value="o.slug">{{ o.name }}</option>
+          </select>
+        </div>
+
+        <div v-if="scopeType === 'repo'" class="flex flex-col gap-1.5">
+          <label class="text-sm font-medium">Repository</label>
+          <select
+            v-model="scopeRepo"
+            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
+          >
+            <option value="" disabled>Select a repository…</option>
+            <option v-for="r in repos" :key="r.name" :value="r.name">{{ r.name }}</option>
+          </select>
+        </div>
+
         <div class="flex justify-end gap-2">
           <UiButton variant="outline" type="button" @click="closeCreate">Cancel</UiButton>
           <UiButton type="submit">Create</UiButton>

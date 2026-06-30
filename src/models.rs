@@ -42,6 +42,18 @@ impl OrgRole {
     }
 }
 
+/// What a personal access token is allowed to reach, independent of (and
+/// intersected with) its owner's RBAC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenScope {
+    /// Everything the owner can reach (default).
+    All,
+    /// Only repositories within this org id.
+    Org(String),
+    /// Only this single repository id.
+    Repo(String),
+}
+
 /// Permission level on a repository, ordered so comparisons express "at least".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

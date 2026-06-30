@@ -162,7 +162,7 @@ docker run -d --name ruskery -p 80:80 -p 443:443 \
 
 ## Security
 
-- Argon2id password hashing; high‑entropy, hashed personal access tokens.
+- Argon2id password hashing; high‑entropy, hashed personal access tokens — optionally **scoped to a single organization or repository** (the issued registry token is always the owner's RBAC ∩ the token's scope).
 - Registry access uses short‑lived, **scoped** JWT bearer tokens (per‑repository `pull`/`push`/`delete`).
 - Per‑IP rate limiting on authentication endpoints; CSP, HSTS (under TLS), `X-Frame-Options`, and
   `X-Content-Type-Options` on every response.

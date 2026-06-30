@@ -92,6 +92,12 @@ enum AdminCommand {
         username: String,
         #[arg(long, default_value = "cli")]
         name: String,
+        /// Scope the token to an org slug.
+        #[arg(long)]
+        org: Option<String>,
+        /// Scope the token to a repo (requires --org).
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -187,11 +193,42 @@ async fn run_admin(pool: &db::Db, cmd: AdminCommand) -> anyhow::Result<()> {
                 role.as_str()
             );
         }
-        AdminCommand::CreateToken { username, name } => {
+        AdminCommand::CreateToken {
+            username,
+            name,
+            org,
+            repo,
+        } => {
             let user = db::users::find_by_login(pool, &username)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("user not found"))?;
-            let token = db::users::create_pat(pool, &user.id, &name).await?;
+            let (kind, org_id, repo_id) = match (org.as_deref(), repo.as_deref()) {
+                (Some(slug), Some(repo_name)) => {
+                    let org = db::orgs::find_org_by_slug(pool, slug)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("org not found"))?;
+                    let r = db::orgs::find_repo(pool, &org.id, repo_name)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("repo not found"))?;
+                    ("repo", None, Some(r.id))
+                }
+                (Some(slug), None) => {
+                    let org = db::orgs::find_org_by_slug(pool, slug)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("org not found"))?;
+                    ("org", Some(org.id), None)
+                }
+                _ => ("all", None, None),
+            };
+            let token = db::users::create_pat(
+                pool,
+                &user.id,
+                &name,
+                kind,
+                org_id.as_deref(),
+                repo_id.as_deref(),
+            )
+            .await?;
             println!("{token}");
         }
     }

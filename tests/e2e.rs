@@ -231,6 +231,77 @@ async fn end_to_end() {
         .iter()
         .any(|r| r == "acme/app"));
 
+    // ── scoped personal access tokens ────────────────────────────────
+    // A token scoped to acme/app reaches it, but nothing else — even though its
+    // owner (admin) has full access to the whole org.
+    let scoped_pat = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "repo-scoped", "org": "acme", "repo": "app" }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Allowed on the scoped repo.
+    let app_jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &scoped_pat,
+        "repository:acme/app:pull,push",
+    )
+    .await;
+    assert_eq!(
+        reg.get(format!("{base}/v2/acme/app/manifests/v1"))
+            .bearer_auth(&app_jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200,
+        "repo-scoped token must reach its repo"
+    );
+
+    // Denied on a different repo (token scope excludes it; can't even create it).
+    let other_jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &scoped_pat,
+        "repository:acme/other:pull,push",
+    )
+    .await;
+    assert_eq!(
+        reg.post(format!("{base}/v2/acme/other/blobs/uploads/"))
+            .bearer_auth(&other_jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401,
+        "repo-scoped token must be denied on other repos"
+    );
+
+    // The token list surfaces the scope.
+    let token_list: serde_json::Value = dash
+        .get(format!("{base}/api/v1/tokens"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(token_list["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["scope"] == "acme/app"));
+
     // ── dashboard: users, members, teams ─────────────────────────────
     let mk_user = dash
         .post(format!("{base}/api/v1/users"))

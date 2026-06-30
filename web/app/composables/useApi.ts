@@ -56,6 +56,8 @@ export interface Token {
   token_prefix: string;
   last_used_at: string | null;
   created_at: string;
+  /** "all", "<org>", or "<org>/<repo>". */
+  scope: string;
 }
 
 export function useApi() {

@@ -582,6 +582,12 @@ async fn list_tokens(
 #[derive(Deserialize)]
 struct CreateTokenReq {
     name: String,
+    /// Optional org slug to scope the token to.
+    #[serde(default)]
+    org: Option<String>,
+    /// Optional repo name (within `org`) to scope the token to a single repo.
+    #[serde(default)]
+    repo: Option<String>,
 }
 
 async fn create_token(
@@ -589,7 +595,32 @@ async fn create_token(
     SessionUser(user): SessionUser,
     Json(req): Json<CreateTokenReq>,
 ) -> Result<Response> {
-    let plaintext = db::users::create_pat(state.db(), &user.id, &req.name).await?;
+    // Resolve the requested scope. The user must belong to any org they scope
+    // to; the resulting token is still bounded by their RBAC at issue time.
+    let (kind, org_id, repo_id) = match (req.org.as_deref(), req.repo.as_deref()) {
+        (Some(slug), Some(repo_name)) => {
+            let (org, _) = member_of(&state, &user.id, slug).await?;
+            let repo = db::orgs::find_repo(state.db(), &org.id, repo_name)
+                .await?
+                .ok_or_else(|| Error::bad_request("no such repository"))?;
+            ("repo".to_string(), None, Some(repo.id))
+        }
+        (Some(slug), None) => {
+            let (org, _) = member_of(&state, &user.id, slug).await?;
+            ("org".to_string(), Some(org.id), None)
+        }
+        _ => ("all".to_string(), None, None),
+    };
+
+    let plaintext = db::users::create_pat(
+        state.db(),
+        &user.id,
+        &req.name,
+        &kind,
+        org_id.as_deref(),
+        repo_id.as_deref(),
+    )
+    .await?;
     Ok(json_ok(
         json!({ "token": plaintext, "username": user.username }),
     ))

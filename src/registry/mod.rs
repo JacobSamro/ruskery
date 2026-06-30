@@ -307,7 +307,7 @@ async fn token_endpoint(
         return auth::challenge(&state, &headers, None);
     };
 
-    let user = match resolve_user(&state, &creds.username, &creds.password).await {
+    let (user, token_scope) = match resolve_user(&state, &creds.username, &creds.password).await {
         Some(u) => u,
         None => return auth::challenge(&state, &headers, None),
     };
@@ -320,7 +320,15 @@ async fn token_endpoint(
         if scope.kind != "repository" {
             continue;
         }
-        match rbac::grant_repository(state.db(), &user.id, &scope.name, &scope.actions).await {
+        match rbac::grant_repository(
+            state.db(),
+            &user.id,
+            &scope.name,
+            &scope.actions,
+            &token_scope,
+        )
+        .await
+        {
             Ok(granted) if !granted.is_empty() => access.push(token::AccessEntry {
                 kind: "repository".into(),
                 name: scope.name.clone(),
@@ -346,15 +354,17 @@ async fn token_endpoint(
     }
 }
 
+/// Authenticate by account password (full scope) or, failing that, as a PAT
+/// (carrying that token's scope).
 async fn resolve_user(
     state: &AppState,
     username: &str,
     secret: &str,
-) -> Option<crate::models::User> {
+) -> Option<(crate::models::User, crate::models::TokenScope)> {
     if !username.is_empty() {
         if let Ok(Some(u)) = db::users::find_by_login(state.db(), username).await {
             if password::verify_password(secret, &u.password_hash) {
-                return Some(u);
+                return Some((u, crate::models::TokenScope::All));
             }
         }
     }

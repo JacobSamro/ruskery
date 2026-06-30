@@ -3,7 +3,7 @@
 
 use crate::db::{orgs, Db};
 use crate::error::Result;
-use crate::models::{OrgRole, Permission};
+use crate::models::{OrgRole, Permission, TokenScope};
 
 /// A parsed registry scope, e.g. `repository:acme/api:pull,push`.
 #[derive(Debug, Clone)]
@@ -40,12 +40,14 @@ impl Scope {
 }
 
 /// Decide which of the `requested` actions to grant on repository `name`
-/// (`<org-slug>/<repo>`) for `user_id`. Returns the granted subset.
+/// (`<org-slug>/<repo>`) for `user_id`, further constrained by the access
+/// token's `scope`. Returns the granted subset (owner RBAC ∩ token scope).
 pub async fn grant_repository(
     db: &Db,
     user_id: &str,
     name: &str,
     requested: &[String],
+    scope: &TokenScope,
 ) -> Result<Vec<String>> {
     let Some((org_slug, repo_name)) = name.split_once('/') else {
         return Ok(vec![]);
@@ -54,9 +56,20 @@ pub async fn grant_repository(
         return Ok(vec![]);
     };
 
+    let repo = orgs::find_repo(db, &org.id, repo_name).await?;
+
+    // Enforce the token's scope before computing any grants.
+    match scope {
+        TokenScope::All => {}
+        TokenScope::Org(oid) if *oid == org.id => {}
+        TokenScope::Repo(rid) if repo.as_ref().map(|r| &r.id == rid).unwrap_or(false) => {}
+        // Token is not allowed to touch this org/repo.
+        _ => return Ok(vec![]),
+    }
+
     let mut granted = Vec::new();
 
-    match orgs::find_repo(db, &org.id, repo_name).await? {
+    match repo {
         Some(repo) => {
             let perm = orgs::repo_permission(db, &repo.id, &org.id, user_id).await?;
             for action in requested {
