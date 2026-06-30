@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **ACME contact email is now editable in the dashboard** (Settings → Domains &
   TLS) instead of only via `config.toml`. Stored in the DB and used when
   registering the Let's Encrypt account; the dashboard value wins over config.
+  A contact email is now **required before a domain can be added** (enforced by
+  both the API and the dashboard), so a certificate request always has a contact.
 
 ## [0.2.1] - 2026-06-30
 

@@ -587,23 +587,18 @@ async fn end_to_end() {
     assert_eq!(denied.status(), 401, "member without grant must be denied");
 
     // ── domains / TLS management ──────────────────────────────────────
-    let add_domain = dash
+    // A contact email is mandatory before any domain can be added.
+    let add_no_email = dash
         .post(format!("{base}/api/v1/domains"))
         .json(&json!({"domain":"registry.example.com"}))
         .send()
         .await
         .unwrap();
-    assert_eq!(add_domain.status(), 200);
-    let domains: serde_json::Value = dash
-        .get(format!("{base}/api/v1/domains"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(domains["domains"][0]["domain"], "registry.example.com");
-    assert_eq!(domains["domains"][0]["status"], "pending");
+    assert_eq!(
+        add_no_email.status(),
+        400,
+        "adding a domain without a contact email must be rejected"
+    );
 
     // ── ACME contact email is settable from the dashboard ─────────────
     // Invalid address is rejected.
@@ -635,6 +630,26 @@ async fn end_to_end() {
         .await
         .unwrap();
     assert_eq!(tls_settings["contact_email"], "ops@example.com");
+
+    // Now the domain can be added.
+    let add_domain = dash
+        .post(format!("{base}/api/v1/domains"))
+        .json(&json!({"domain":"registry.example.com"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(add_domain.status(), 200);
+    let domains: serde_json::Value = dash
+        .get(format!("{base}/api/v1/domains"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(domains["domains"][0]["domain"], "registry.example.com");
+    assert_eq!(domains["domains"][0]["status"], "pending");
+
     let domains2: serde_json::Value = dash
         .get(format!("{base}/api/v1/domains"))
         .send()

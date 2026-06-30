@@ -142,7 +142,17 @@ async function saveContactEmail() {
 
 async function addDomain() {
   domainError.value = "";
+  if (!contactEmail.value.trim()) {
+    domainError.value = "Add a Let's Encrypt contact email above before adding a domain.";
+    return;
+  }
   try {
+    // Persist the email first so the certificate request has a contact.
+    await saveContactEmail();
+    if (contactError.value) {
+      domainError.value = contactError.value;
+      return;
+    }
     await api.post("/api/v1/domains", { domain: newDomain.value });
     newDomain.value = "";
     await loadDomains();

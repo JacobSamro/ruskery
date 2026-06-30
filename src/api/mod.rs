@@ -1090,6 +1090,16 @@ async fn add_domain(
     if !valid_domain(&domain) {
         return Err(Error::bad_request("invalid domain name"));
     }
+    // A contact email is required so Let's Encrypt can reach the operator about
+    // expiry/issues before a certificate is ever requested for this domain.
+    let contact =
+        db::settings::effective_contact_email(state.db(), &state.config().tls.contact_email)
+            .await?;
+    if contact.is_empty() {
+        return Err(Error::bad_request(
+            "set a Let's Encrypt contact email before adding a domain",
+        ));
+    }
     db::domains::add(state.db(), &domain).await?;
     db::audit::record(
         state.db(),
