@@ -30,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/auth/google/callback", get(google_callback))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route("/api/v1/orgs", get(list_orgs).post(create_org))
+        .route("/api/v1/admin/orgs", get(list_all_orgs))
         .route("/api/v1/orgs/{slug}", get(get_org))
         .route("/api/v1/orgs/{slug}/repos", get(list_repos))
         .route(
@@ -437,6 +438,18 @@ async fn list_orgs(
         .into_iter()
         .map(|(o, role)| json!({ "id": o.id, "slug": o.slug, "name": o.name, "role": role }))
         .collect();
+    Ok(json_ok(json!({ "orgs": orgs })))
+}
+
+/// Super-admin view of every organization on the instance (with counts).
+async fn list_all_orgs(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let orgs = db::orgs::list_all_with_counts(state.db()).await?;
     Ok(json_ok(json!({ "orgs": orgs })))
 }
 

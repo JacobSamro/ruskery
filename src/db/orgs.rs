@@ -203,6 +203,41 @@ pub async fn orgs_for_user(db: &Db, user_id: &str) -> Result<Vec<(Org, OrgRole)>
 }
 
 #[derive(Serialize)]
+pub struct OrgSummary {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+    pub created_at: String,
+    pub member_count: i64,
+    pub repo_count: i64,
+}
+
+/// Every organization with member + repository counts — the super-admin view.
+pub async fn list_all_with_counts(db: &Db) -> Result<Vec<OrgSummary>> {
+    let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT o.id, o.slug, o.name, o.created_at,
+                (SELECT COUNT(*) FROM org_members m WHERE m.org_id = o.id),
+                (SELECT COUNT(*) FROM repositories r WHERE r.org_id = o.id)
+         FROM orgs o ORDER BY o.created_at DESC",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, slug, name, created_at, member_count, repo_count)| OrgSummary {
+                id,
+                slug,
+                name,
+                created_at,
+                member_count,
+                repo_count,
+            },
+        )
+        .collect())
+}
+
+#[derive(Serialize)]
 pub struct MemberRow {
     pub user_id: String,
     pub username: String,

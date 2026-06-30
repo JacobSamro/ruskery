@@ -1010,6 +1010,45 @@ async fn end_to_end() {
         "outsider must not read another org"
     );
 
+    // ── super-admin: list every org on the instance ──────────────────
+    let all_orgs: serde_json::Value = dash
+        .get(format!("{base}/api/v1/admin/orgs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let slugs: Vec<&str> = all_orgs["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["slug"].as_str().unwrap())
+        .collect();
+    assert!(
+        slugs.contains(&"acme") && slugs.contains(&"rival"),
+        "admin must see all orgs, got {slugs:?}"
+    );
+    let acme_summary = all_orgs["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["slug"] == "acme")
+        .unwrap();
+    assert!(acme_summary["member_count"].as_i64().unwrap() >= 1);
+    assert!(acme_summary["repo_count"].as_i64().unwrap() >= 1);
+    // A non-admin cannot enumerate every org.
+    assert_eq!(
+        outsider
+            .get(format!("{base}/api/v1/admin/orgs"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403,
+        "non-admin must not list all orgs"
+    );
+
     // ── upload-session tenant isolation ──────────────────────────────
     // An upload started in one org can't be driven from another org's path,
     // even by an admin authorized on both (verifies the session org check).

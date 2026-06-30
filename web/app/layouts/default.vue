@@ -77,6 +77,17 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
 
         <div class="my-2 border-t border-[var(--color-border)]" />
 
+        <NuxtLink
+          v-if="me?.user.is_admin"
+          to="/orgs"
+          :class="linkClass"
+          :active-class="''"
+          :exact-active-class="activeClass"
+        >
+          <UiIcon name="grid" :size="16" />
+          Organizations
+        </NuxtLink>
+
         <NuxtLink to="/tokens" :class="linkClass" :active-class="activeClass">
           <UiIcon name="key" :size="16" />
           Access Tokens

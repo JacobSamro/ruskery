@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Organizations view for super admins.** Instance admins now get an
+  "Organizations" entry in the sidebar linking to a page that lists every
+  organization on the instance (with repo + member counts) and can create new
+  ones. Backed by a new admin-only `GET /api/v1/admin/orgs`.
+
 - **ACME contact email is now editable in the dashboard** (Settings → Domains &
   TLS) instead of only via `config.toml`. Stored in the DB and used when
   registering the Let's Encrypt account; the dashboard value wins over config.
