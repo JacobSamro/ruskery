@@ -48,14 +48,30 @@ jobs:
         if: runner.os == 'macOS'
         run: command -v aws >/dev/null 2>&1 || brew install awscli
 
+      # macOS pulls the published image rather than building: compiling a large
+      # Rust project inside the Colima VM is slow and its network drops crate
+      # fetches mid-stream. Keeping ruskery a *container* also preserves the
+      # auto-trusted `localhost:5000` for `docker login` (a host-native registry
+      # would force insecure-registry config into the in-VM daemon).
+      - name: Use published image (macOS)
+        if: runner.os == 'macOS'
+        run: echo "RUSKERY_IMAGE=ghcr.io/jacobsamro/ruskery:latest" >> "$GITHUB_ENV"
+
       # On Linux the native daemon needs to resolve the presigned-URL host to the
       # published MinIO port; on macOS Colima provides host.docker.internal in-VM.
       - name: Map host.docker.internal (Linux)
         if: runner.os == 'Linux'
         run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
 
-      - name: Build & start ruskery + MinIO
+      - name: Build & start ruskery + MinIO (Linux)
+        if: runner.os == 'Linux'
         run: docker compose -f docker-compose.e2e.yml up -d --build
+
+      - name: Pull & start ruskery + MinIO (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          docker pull "$RUSKERY_IMAGE"
+          docker compose -f docker-compose.e2e.yml up -d
 
       - name: Create the storage bucket
         run: |

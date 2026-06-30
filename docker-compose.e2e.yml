@@ -14,6 +14,11 @@ services:
       MINIO_ROOT_PASSWORD: ruskerysecret
 
   ruskery:
+    # Linux builds from source (RUSKERY_IMAGE unset -> the local tag, built with
+    # `up --build`). macOS sets RUSKERY_IMAGE to the published GHCR image and
+    # pulls it instead of building — compiling a large Rust project inside the
+    # Colima VM is slow and its network is too flaky for reliable crate fetches.
+    image: ${RUSKERY_IMAGE:-ruskery:e2e}
     build: .
     depends_on:
       - minio
