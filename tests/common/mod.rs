@@ -448,6 +448,28 @@ pub async fn push_manifest(
     (digest, resp.status())
 }
 
+/// PUT a raw manifest/index body under its own digest (no tag), returning the
+/// digest + status. Used for image indexes and by-digest child manifests.
+pub async fn push_manifest_raw(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    repo: &str,
+    media_type: &str,
+    body: &str,
+) -> (String, reqwest::StatusCode) {
+    let digest = sha256_digest(body.as_bytes());
+    let resp = client
+        .put(format!("{base}/v2/{repo}/manifests/{digest}"))
+        .header("content-type", media_type)
+        .bearer_auth(token)
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    (digest, resp.status())
+}
+
 /// A reqwest client that does NOT follow redirects (to assert the 307 itself).
 pub fn no_redirect_client() -> reqwest::Client {
     reqwest::Client::builder()

@@ -1540,3 +1540,266 @@ async fn end_to_end() {
     }
     assert!(limited, "auth endpoint should rate-limit a burst");
 }
+
+/// Full multi-arch (image index) lifecycle: by-digest child manifests, an index,
+/// the tag→index→child→blob pull path, and GC reference-counting through the
+/// index (blobs survive while children exist, and are collected once removed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multi_arch_lifecycle() {
+    let stub = spawn_s3_stub().await;
+    let rk = Ruskery::spawn(&stub).await;
+    let base = rk.base.clone();
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let reg = reqwest::Client::new();
+    let noredir = no_redirect_client();
+
+    dash.post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email":"admin@example.com","username":"admin","password":"supersecret",
+            "org_slug":"acme","org_name":"Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    let pat = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "ci" }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let jwt = registry_token(&reg, &base, "admin", &pat, "repository:acme/img:pull,push").await;
+
+    // Distinct blobs reachable ONLY through the index's children.
+    let config = br#"{"architecture":"multi","os":"linux"}"#.to_vec();
+    let layer_amd = b"amd64-layer-bytes".to_vec();
+    let layer_arm = b"arm64-layer-bytes".to_vec();
+    let config_d = push_blob(&reg, &base, &jwt, "acme/img", &config).await;
+    let amd_d = push_blob(&reg, &base, &jwt, "acme/img", &layer_amd).await;
+    let arm_d = push_blob(&reg, &base, &jwt, "acme/img", &layer_arm).await;
+
+    // Per-arch child manifests, pushed by digest (the buildx flow: only the
+    // index gets a tag).
+    let child_body = |layer_d: &str, layer_len: usize| {
+        json!({
+            "schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",
+            "config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":config_d,"size":config.len()},
+            "layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":layer_d,"size":layer_len}]
+        })
+        .to_string()
+    };
+    let amd_body = child_body(&amd_d, layer_amd.len());
+    let arm_body = child_body(&arm_d, layer_arm.len());
+    let (amd_child, s1) = push_manifest_raw(
+        &reg,
+        &base,
+        &jwt,
+        "acme/img",
+        "application/vnd.oci.image.manifest.v1+json",
+        &amd_body,
+    )
+    .await;
+    let (arm_child, s2) = push_manifest_raw(
+        &reg,
+        &base,
+        &jwt,
+        "acme/img",
+        "application/vnd.oci.image.manifest.v1+json",
+        &arm_body,
+    )
+    .await;
+    assert_eq!(s1, 201);
+    assert_eq!(s2, 201);
+
+    // The index, tagged "v1".
+    let index_body = json!({
+        "schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",
+        "manifests":[
+            {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":amd_child,"size":amd_body.len(),
+             "platform":{"architecture":"amd64","os":"linux"}},
+            {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":arm_child,"size":arm_body.len(),
+             "platform":{"architecture":"arm64","os":"linux"}}
+        ]
+    })
+    .to_string();
+    let put_idx = reg
+        .put(format!("{base}/v2/acme/img/manifests/v1"))
+        .header("content-type", "application/vnd.oci.image.index.v1+json")
+        .bearer_auth(&jwt)
+        .body(index_body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put_idx.status(), 201);
+    let index_digest = put_idx
+        .headers()
+        .get("docker-content-digest")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // Pull the index by tag and by digest; HEAD; byte-exact; digest header.
+    let by_tag = reg
+        .get(format!("{base}/v2/acme/img/manifests/v1"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_tag.status(), 200);
+    assert_eq!(
+        by_tag.headers().get("content-type").unwrap(),
+        "application/vnd.oci.image.index.v1+json"
+    );
+    assert_eq!(
+        by_tag.headers().get("docker-content-digest").unwrap(),
+        index_digest.as_str()
+    );
+    let body_text = by_tag.text().await.unwrap();
+    assert_eq!(body_text, index_body, "index round-trips byte-for-byte");
+    assert_eq!(
+        reg.head(format!("{base}/v2/acme/img/manifests/{index_digest}"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    // Full multi-arch pull: tag → index → amd64 child → child manifest → layer 307.
+    let idx: serde_json::Value = serde_json::from_str(&body_text).unwrap();
+    let picked = idx["manifests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["platform"]["architecture"] == "amd64")
+        .unwrap()["digest"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(picked, amd_child);
+    let child: serde_json::Value = reg
+        .get(format!("{base}/v2/acme/img/manifests/{picked}"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let layer_digest = child["layers"][0]["digest"].as_str().unwrap().to_string();
+    assert_eq!(layer_digest, amd_d);
+    assert_eq!(
+        noredir
+            .get(format!("{base}/v2/acme/img/blobs/{layer_digest}"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        307
+    );
+    let pulled = reg
+        .get(format!("{base}/v2/acme/img/blobs/{layer_digest}"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(pulled.as_ref(), layer_amd.as_slice());
+
+    // GC keeps every blob — they're referenced via the children's blob records.
+    rk.run_gc();
+    for d in [&config_d, &amd_d, &arm_d] {
+        assert_eq!(
+            reg.head(format!("{base}/v2/acme/img/blobs/{d}"))
+                .bearer_auth(&jwt)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            200,
+            "blob {d} must survive GC while a child references it"
+        );
+    }
+
+    // `delete` is only granted once the repo exists (owner ⇒ admin), so request
+    // a delete-capable token now.
+    let del_jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pat,
+        "repository:acme/img:pull,push,delete",
+    )
+    .await;
+
+    // Deleting the index leaves the children (and their blobs) intact.
+    assert_eq!(
+        reg.delete(format!("{base}/v2/acme/img/manifests/{index_digest}"))
+            .bearer_auth(&del_jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        202
+    );
+    assert_eq!(
+        reg.get(format!("{base}/v2/acme/img/manifests/{amd_child}"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200,
+        "children remain after the index is deleted"
+    );
+    rk.run_gc();
+    assert_eq!(
+        reg.head(format!("{base}/v2/acme/img/blobs/{amd_d}"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200,
+        "child blob survives after the index is deleted"
+    );
+
+    // Deleting both children unreferences their blobs → GC collects them.
+    for child in [&amd_child, &arm_child] {
+        assert_eq!(
+            reg.delete(format!("{base}/v2/acme/img/manifests/{child}"))
+                .bearer_auth(&del_jwt)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            202
+        );
+    }
+    rk.run_gc();
+    for d in [&config_d, &amd_d, &arm_d] {
+        assert_eq!(
+            reg.head(format!("{base}/v2/acme/img/blobs/{d}"))
+                .bearer_auth(&jwt)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404,
+            "blob {d} must be collected once nothing references it"
+        );
+    }
+}
