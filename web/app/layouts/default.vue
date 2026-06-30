@@ -29,6 +29,7 @@ function switchOrg(e: Event) {
 }
 
 async function logout() {
+  if (!confirm("Sign out of ruskery?")) return;
   await api.post("/api/v1/auth/logout").catch(() => {});
   me.value = null;
   await router.push("/login");
