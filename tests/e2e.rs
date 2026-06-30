@@ -362,7 +362,8 @@ async fn end_to_end() {
         "artifactType": "application/vnd.example.sbom",
         "config": {"mediaType":"application/vnd.oci.image.config.v1+json","digest": config_d, "size": config.len()},
         "layers": [{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest": layer_d, "size": layer.len()}],
-        "subject": {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest": manifest_d, "size": 100}
+        "subject": {"mediaType":"application/vnd.oci.image.manifest.v1+json","digest": manifest_d, "size": 100},
+        "annotations": {"org.example.tool": "scanner-1.0"}
     })
     .to_string();
     let referrer_digest = sha256_digest(referrer.as_bytes());
@@ -391,11 +392,31 @@ async fn end_to_end() {
         .await
         .unwrap();
     assert_eq!(refs["mediaType"], "application/vnd.oci.image.index.v1+json");
-    assert!(
-        refs["manifests"].as_array().unwrap().iter().any(|m| {
-            m["digest"] == referrer_digest && m["artifactType"] == "application/vnd.example.sbom"
-        }),
-        "referrer must be listed: {refs}"
+    let referrer_entry = refs["manifests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["digest"] == referrer_digest)
+        .unwrap_or_else(|| panic!("referrer must be listed: {refs}"));
+    assert_eq!(
+        referrer_entry["artifactType"],
+        "application/vnd.example.sbom"
+    );
+    // The descriptor carries the referrer's annotations (OCI).
+    assert_eq!(
+        referrer_entry["annotations"]["org.example.tool"], "scanner-1.0",
+        "referrer descriptor must include annotations"
+    );
+    // A syntactically invalid subject digest is rejected.
+    assert_eq!(
+        reg.get(format!("{base}/v2/acme/app/referrers/not-a-digest"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400,
+        "invalid referrers digest must be rejected"
     );
 
     // artifactType filter narrows the list and sets OCI-Filters-Applied.
@@ -479,7 +500,7 @@ async fn end_to_end() {
             .await
             .unwrap()
             .status(),
-        401,
+        403,
         "repo-scoped token must be denied on other repos"
     );
 
@@ -537,7 +558,7 @@ async fn end_to_end() {
             .await
             .unwrap()
             .status(),
-        401,
+        403,
         "pull-capped token must not be able to push"
     );
 
@@ -764,7 +785,7 @@ async fn end_to_end() {
         .send()
         .await
         .unwrap();
-    assert_eq!(denied.status(), 401, "member without grant must be denied");
+    assert_eq!(denied.status(), 403, "member without grant must be denied");
 
     // ── domains / TLS management ──────────────────────────────────────
     // A contact email is mandatory before any domain can be added.
@@ -1167,7 +1188,7 @@ async fn end_to_end() {
             .await
             .unwrap()
             .status(),
-        401,
+        403,
         "admin must not push into another org"
     );
     // outsider is not a member of 'acme' -> no read there.
@@ -1186,7 +1207,7 @@ async fn end_to_end() {
             .await
             .unwrap()
             .status(),
-        401,
+        403,
         "outsider must not read another org"
     );
 
@@ -1363,19 +1384,34 @@ async fn end_to_end() {
         .send()
         .await
         .unwrap();
-    // Simulated reconnect: ask where we left off.
+    // Simulated reconnect: ask where we left off (OCI: 204 No Content + Range).
     let status = reg
         .get(format!("{base}/v2/acme/resume/blobs/uploads/{up}"))
         .bearer_auth(&res_jwt)
         .send()
         .await
         .unwrap();
-    assert_eq!(status.status(), 202);
+    assert_eq!(status.status(), 204);
     assert_eq!(
         status.headers().get("range").unwrap().to_str().unwrap(),
         format!("0-{}", p1.len() - 1),
         "status reports bytes received so far"
     );
+    // An out-of-order chunk (Content-Range start ≠ current offset) is rejected.
+    let bad_range = reg
+        .patch(format!("{base}/v2/acme/resume/blobs/uploads/{up}"))
+        .header("content-range", "999-1100")
+        .bearer_auth(&res_jwt)
+        .body(p2.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        bad_range.status(),
+        416,
+        "out-of-order chunk must be rejected"
+    );
+
     // Resume + finalize.
     reg.patch(format!("{base}/v2/acme/resume/blobs/uploads/{up}"))
         .bearer_auth(&res_jwt)

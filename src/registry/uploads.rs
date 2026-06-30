@@ -146,16 +146,46 @@ pub async fn start(
     Ok(accepted_response(name, &upload_id, 0))
 }
 
-/// `PATCH /v2/<name>/blobs/uploads/<uuid>` — stream a chunk.
+/// `PATCH /v2/<name>/blobs/uploads/<uuid>` — stream a chunk. An optional
+/// `Content-Range` is validated: its start must equal the current upload offset
+/// (chunks must arrive in order), else `416` with the current `Range`.
 pub async fn patch(
     state: &AppState,
     org_id: &str,
     name: &str,
     upload_id: &str,
+    content_range: Option<&str>,
     body: Body,
 ) -> Result<Response> {
     let session = locked_session(state, upload_id, org_id).await?;
     let mut s = session.lock().await;
+
+    if let Some(cr) = content_range {
+        let start = cr
+            .trim()
+            .split('-')
+            .next()
+            .and_then(|n| n.trim().parse::<u64>().ok());
+        if start.is_some_and(|start| start != s.total) {
+            let range_end = s.total.saturating_sub(1);
+            drop(s);
+            return Ok((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [
+                    (
+                        header::LOCATION,
+                        format!("/v2/{name}/blobs/uploads/{upload_id}"),
+                    ),
+                    (header::RANGE, format!("0-{range_end}")),
+                    (
+                        header::HeaderName::from_static("docker-upload-uuid"),
+                        upload_id.to_string(),
+                    ),
+                ],
+            )
+                .into_response());
+        }
+    }
 
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
@@ -246,7 +276,8 @@ pub async fn finish(
         .into_response())
 }
 
-/// `GET /v2/<name>/blobs/uploads/<uuid>` — report upload progress.
+/// `GET /v2/<name>/blobs/uploads/<uuid>` — report upload progress. OCI wants
+/// `204 No Content` with `Location` + `Range` (not `202`, which is for writes).
 pub async fn status(
     state: &AppState,
     org_id: &str,
@@ -255,7 +286,22 @@ pub async fn status(
 ) -> Result<Response> {
     let session = locked_session(state, upload_id, org_id).await?;
     let total = session.lock().await.total;
-    Ok(accepted_response(name, upload_id, total))
+    let range_end = total.saturating_sub(1);
+    Ok((
+        StatusCode::NO_CONTENT,
+        [
+            (
+                header::LOCATION,
+                format!("/v2/{name}/blobs/uploads/{upload_id}"),
+            ),
+            (header::RANGE, format!("0-{range_end}")),
+            (
+                header::HeaderName::from_static("docker-upload-uuid"),
+                upload_id.to_string(),
+            ),
+        ],
+    )
+        .into_response())
 }
 
 /// `DELETE /v2/<name>/blobs/uploads/<uuid>` — cancel an upload.

@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **OCI spec-compliance fixes** (from a conformance-focused review):
+  upload-status `GET` now returns `204 No Content` (was `202`); `PATCH` validates
+  `Content-Range` and rejects out-of-order chunks with `416`; an authenticated
+  caller lacking a grant now gets `403 DENIED` (was `401`); the referrers
+  endpoint rejects a malformed subject digest with `400` and now includes each
+  referrer's `annotations` in its descriptor.
+
 ### Added
 
 - **OCI distribution-spec conformance in CI.** A new workflow runs the official

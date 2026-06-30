@@ -72,12 +72,25 @@ pub fn require(
 ) -> std::result::Result<token::Claims, Response> {
     match verify_bearer(state, headers) {
         Some(claims) if claims.grants(name, action) => Ok(claims),
-        _ => Err(challenge(
+        // Authenticated but lacking the grant → 403 DENIED (a hard deny, not a
+        // re-auth prompt). No/invalid credentials → 401 challenge.
+        Some(_) => Err(denied(name, action)),
+        None => Err(challenge(
             state,
             headers,
             Some(&format!("repository:{name}:{action}")),
         )),
     }
+}
+
+/// A `403 DENIED` for a caller who is authenticated but not authorized.
+fn denied(name: &str, action: &str) -> Response {
+    let body = json!({ "errors": [ {
+        "code": "DENIED",
+        "message": "requested access to the resource is denied",
+        "detail": format!("{action} on {name}")
+    } ] });
+    (StatusCode::FORBIDDEN, Json(body)).into_response()
 }
 
 /// Verify the request's bearer token. Returns the claims on success.

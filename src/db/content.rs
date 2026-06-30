@@ -183,12 +183,15 @@ pub struct Referrer {
     pub media_type: String,
     pub size: i64,
     pub artifact_type: String,
+    /// The referrer manifest bytes, so its `annotations` can be surfaced in the
+    /// referrers descriptor (per the OCI spec).
+    pub content: Vec<u8>,
 }
 
 /// Manifests in `repo_id` whose `subject` is `subject_digest`.
 pub async fn list_referrers(db: &Db, repo_id: &str, subject_digest: &str) -> Result<Vec<Referrer>> {
-    let rows: Vec<(String, String, i64, String)> = sqlx::query_as(
-        "SELECT m.digest, m.media_type, m.size, r.artifact_type
+    let rows: Vec<(String, String, i64, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT m.digest, m.media_type, m.size, r.artifact_type, m.content
          FROM manifest_referrers r
          JOIN manifests m ON m.repo_id = r.repo_id AND m.digest = r.referrer_digest
          WHERE r.repo_id = ? AND r.subject_digest = ?
@@ -200,12 +203,15 @@ pub async fn list_referrers(db: &Db, repo_id: &str, subject_digest: &str) -> Res
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(digest, media_type, size, artifact_type)| Referrer {
-            digest,
-            media_type,
-            size,
-            artifact_type,
-        })
+        .map(
+            |(digest, media_type, size, artifact_type, content)| Referrer {
+                digest,
+                media_type,
+                size,
+                artifact_type,
+                content,
+            },
+        )
         .collect())
 }
 

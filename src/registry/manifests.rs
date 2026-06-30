@@ -23,6 +23,17 @@ fn is_digest(reference: &str) -> bool {
     reference.contains(':')
 }
 
+/// A syntactically valid digest: `<algo>:<hex>`, non-empty algorithm and an
+/// all-hex digest (we only emit sha256 but accept any algorithm name).
+fn is_valid_digest(d: &str) -> bool {
+    match d.split_once(':') {
+        Some((algo, hex)) => {
+            !algo.is_empty() && !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        }
+        None => false,
+    }
+}
+
 /// `PUT /v2/<name>/manifests/<reference>` — store a manifest, tagging it if the
 /// reference is a tag.
 #[allow(clippy::too_many_arguments)]
@@ -199,6 +210,14 @@ pub async fn referrers(
     subject_digest: &str,
     artifact_type: Option<&str>,
 ) -> Result<Response> {
+    if !is_valid_digest(subject_digest) {
+        return Err(Error::oci(
+            StatusCode::BAD_REQUEST,
+            "DIGEST_INVALID",
+            "invalid digest",
+        ));
+    }
+
     let refs = match db::orgs::find_repo(state.db(), &org.id, repo_name).await? {
         Some(repo) => {
             let mut refs =
@@ -221,6 +240,14 @@ pub async fn referrers(
             });
             if !r.artifact_type.is_empty() {
                 entry["artifactType"] = serde_json::Value::String(r.artifact_type.clone());
+            }
+            // Surface the referrer's annotations in its descriptor (OCI).
+            if let Some(ann) = serde_json::from_slice::<serde_json::Value>(&r.content)
+                .ok()
+                .and_then(|m| m.get("annotations").cloned())
+                .filter(|a| a.is_object())
+            {
+                entry["annotations"] = ann;
             }
             entry
         })

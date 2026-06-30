@@ -287,7 +287,12 @@ async fn dispatch(
             _ => unsupported(),
         },
         Op::UploadSession(uuid) => match method {
-            Method::PATCH => uploads::patch(&state, &org.id, &name, &uuid, body).await,
+            Method::PATCH => {
+                let content_range = headers
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok());
+                uploads::patch(&state, &org.id, &name, &uuid, content_range, body).await
+            }
             Method::PUT => {
                 let digest = uploads::query_param(&query, "digest").map(percent_decode);
                 match digest {
