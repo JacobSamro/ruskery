@@ -1,28 +1,24 @@
-name: docker e2e (Linux/macOS/Windows)
+name: docker e2e (Linux/Windows)
 
-# Real `docker login` + push + pull against a running ruskery, on all three
-# desktop OSes. Heavy (builds the binary + pulls base images), so it runs on
-# demand and on release tags rather than every push — the fast in-process e2e
-# in ci.yml covers ordinary commits.
+# Real `docker login` + push + pull against a running ruskery. Heavy (builds the
+# binary + pulls base images), so it runs on demand and on release tags rather
+# than every push — the fast in-process e2e in ci.yml covers ordinary commits.
+#
+# macOS is intentionally absent: GitHub's hosted macOS runners are Apple-silicon
+# VMs, and Apple's Hypervisor.framework forbids nested virtualization, so QEMU
+# aborts with HV_UNSUPPORTED and no Linux Docker daemon can start there (Colima/
+# Lima cannot boot). The docker CLI behaviour is host-OS-independent anyway —
+# what we exercise is the registry, which Linux + Windows already cover.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
 jobs:
-  # ── Linux + macOS: ruskery & MinIO as containers, push from the host CLI ──
+  # ── Linux: ruskery & MinIO as containers, push from the host docker CLI ──
   compose:
-    name: docker push/pull (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    # macOS provides Docker via Colima/Lima, which is flaky to spin up on hosted
-    # runners (limactl can fail to boot the VM). Keep the leg for signal, but
-    # don't let an engine-setup failure fail the workflow — Linux and Windows
-    # are the authoritative docker push/pull gates.
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    name: docker push/pull (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       AWS_ACCESS_KEY_ID: ruskery
@@ -32,14 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # macOS runners have no Docker daemon — provision one (Colima, Linux engine).
-      - name: Set up Docker (macOS)
-        if: runner.os == 'macOS'
-        uses: docker/setup-docker-action@v5
-
-      # On Linux the native daemon must resolve the presigned-URL host.
-      - name: Map host.docker.internal (Linux)
-        if: runner.os == 'Linux'
+      # The native daemon must resolve the presigned-URL host.
+      - name: Map host.docker.internal
         run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
 
       - name: Build & start ruskery + MinIO
