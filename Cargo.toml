@@ -71,6 +71,9 @@ governor = "0.8"
 # Lock-free hot-swap of the storage client when settings change at runtime
 arc-swap = "1"
 
+# Google OAuth (token exchange + userinfo over HTTPS)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # Utilities
 anyhow = "1"
 thiserror = "2"

@@ -1,16 +1,18 @@
 //! Dashboard REST API (`/api/v1`), authenticated by the session cookie.
 
 use axum::{
-    extract::{Path, State},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
+use axum_extra::extract::cookie::{Cookie, SameSite};
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::auth::{password, session, SessionUser};
+use crate::auth::{oauth, password, session, SessionUser};
 use crate::db;
 use crate::error::{Error, Result};
 use crate::models::OrgRole;
@@ -23,6 +25,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/me", get(me))
+        .route("/api/v1/auth/providers", get(providers))
+        .route("/api/v1/auth/google/login", get(google_login))
+        .route("/api/v1/auth/google/callback", get(google_callback))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route("/api/v1/orgs", get(list_orgs).post(create_org))
         .route("/api/v1/orgs/{slug}", get(get_org))
@@ -67,6 +72,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/v1/settings/storage",
             get(get_storage_settings).put(update_storage_settings),
+        )
+        .route(
+            "/api/v1/settings/oauth",
+            get(get_oauth_settings).put(update_oauth_settings),
         )
 }
 
@@ -217,6 +226,161 @@ async fn me(State(state): State<AppState>, SessionUser(user): SessionUser) -> Re
         .map(|(o, role)| json!({ "id": o.id, "slug": o.slug, "name": o.name, "role": role }))
         .collect();
     Ok(json_ok(json!({ "user": user, "orgs": orgs })))
+}
+
+// ───────────────────────── google sign-in ─────────────────────────
+
+const OAUTH_STATE_COOKIE: &str = "ruskery_oauth_state";
+
+/// Which external sign-in providers are configured (shown on the login page).
+async fn providers(State(state): State<AppState>) -> Result<Response> {
+    let g = oauth::load(state.db()).await?;
+    Ok(json_ok(json!({ "google": g.is_active() })))
+}
+
+/// The OAuth redirect URI (must be registered in the Google Cloud console).
+fn google_redirect_uri(state: &AppState, headers: &HeaderMap) -> String {
+    format!(
+        "{}{}",
+        crate::registry::auth::base_url(state, headers),
+        oauth::CALLBACK_PATH
+    )
+}
+
+/// `GET /api/v1/auth/google/login` — kick off the OAuth dance.
+async fn google_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> Response {
+    let cfg = match oauth::load(state.db()).await {
+        Ok(c) if c.is_active() => c,
+        _ => return Redirect::to("/login?error=oauth_disabled").into_response(),
+    };
+    let csrf = crate::util::random_id();
+    let redirect_uri = google_redirect_uri(&state, &headers);
+    let url = oauth::authorize_url(&cfg, &redirect_uri, &csrf);
+
+    // Short-lived CSRF state cookie. SameSite=Lax so it survives the top-level
+    // redirect back from Google.
+    let mut cookie = Cookie::new(OAUTH_STATE_COOKIE, csrf);
+    cookie.set_http_only(true);
+    cookie.set_secure(state.cookie_secure());
+    cookie.set_same_site(SameSite::Lax);
+    cookie.set_path("/");
+    cookie.set_max_age(time::Duration::seconds(600));
+
+    (jar.add(cookie), Redirect::to(&url)).into_response()
+}
+
+#[derive(Deserialize)]
+struct OAuthCallback {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    state: String,
+}
+
+/// `GET /api/v1/auth/google/callback` — verify state, exchange the code, then
+/// link/provision the user and start a session.
+async fn google_callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Query(q): Query<OAuthCallback>,
+) -> Response {
+    match google_callback_inner(&state, &headers, &jar, &q).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::warn!(error = %e, "google sign-in failed");
+            let jar = jar.remove(Cookie::from(OAUTH_STATE_COOKIE));
+            (jar, Redirect::to("/login?error=oauth")).into_response()
+        }
+    }
+}
+
+async fn google_callback_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+    q: &OAuthCallback,
+) -> Result<Response> {
+    let cfg = oauth::load(state.db()).await?;
+    if !cfg.is_active() {
+        return Err(Error::Forbidden);
+    }
+    // CSRF: the state in the query must match the cookie we set.
+    let cookie_state = jar.get(OAUTH_STATE_COOKIE).map(|c| c.value().to_string());
+    if q.state.is_empty() || cookie_state.as_deref() != Some(q.state.as_str()) {
+        return Err(Error::Unauthorized);
+    }
+
+    let redirect_uri = google_redirect_uri(state, headers);
+    let info = oauth::exchange_code(&cfg, &redirect_uri, &q.code).await?;
+    if !info.email_verified {
+        return Err(Error::bad_request("email not verified by Google"));
+    }
+    let email = info.email.to_ascii_lowercase();
+    if !cfg.allowed_domain.is_empty() {
+        let email_domain = email.rsplit('@').next().unwrap_or("");
+        let hosted_domain = info.hd.to_ascii_lowercase();
+        // Accept on the email domain or the Google Workspace hosted domain.
+        if email_domain != cfg.allowed_domain && hosted_domain != cfg.allowed_domain {
+            return Err(Error::Forbidden);
+        }
+    }
+
+    // Link to an existing account by email, or auto-provision when an allowed
+    // domain is configured (otherwise unknown emails are rejected).
+    let user = match db::users::find_by_login(state.db(), &email).await? {
+        Some(u) => u,
+        None if cfg.allowed_domain.is_empty() => return Err(Error::Forbidden),
+        None => provision_oauth_user(state.db(), &email, &info.name).await?,
+    };
+
+    let ttl = state.config().auth.session_ttl_secs as i64;
+    let sid = db::users::create_session(state.db(), &user.id, ttl).await?;
+    let session_cookie = session::build_cookie(sid, ttl, state.cookie_secure());
+
+    let jar = jar
+        .clone()
+        .add(session_cookie)
+        .remove(Cookie::from(OAUTH_STATE_COOKIE));
+    Ok((jar, Redirect::to("/")).into_response())
+}
+
+/// Create a new local account for an OAuth user (unusable random password).
+async fn provision_oauth_user(db: &db::Db, email: &str, name: &str) -> Result<crate::models::User> {
+    let base = sanitize_username(if name.trim().is_empty() { email } else { name });
+    let username = unique_username(db, &base).await?;
+    let random = format!("{}{}", crate::util::random_id(), crate::util::random_id());
+    let hash = password::hash_password(&random)?;
+    db::users::create(db, email, &username, &hash, false).await
+}
+
+fn sanitize_username(s: &str) -> String {
+    let local = s.split('@').next().unwrap_or(s);
+    let cleaned: String = local
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let trimmed = cleaned.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "user".to_string()
+    } else {
+        trimmed
+    }
+}
+
+async fn unique_username(db: &db::Db, base: &str) -> Result<String> {
+    let mut candidate = base.to_string();
+    let mut n = 1;
+    while db::users::find_by_login(db, &candidate).await?.is_some() {
+        candidate = format!("{base}-{n}");
+        n += 1;
+    }
+    Ok(candidate)
 }
 
 // ───────────────────────── users (instance admin) ─────────────────────────
@@ -744,6 +908,74 @@ async fn update_storage_settings(
     state.set_storage(storage);
 
     db::audit::record(db, Some(&user.id), None, "storage.update", None, None)
+        .await
+        .ok();
+    Ok(json_ok(json!({ "ok": true })))
+}
+
+// ───────────────────────── sign-in settings (instance admin) ─────────────────────────
+
+async fn get_oauth_settings(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    headers: HeaderMap,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let cfg = oauth::load(state.db()).await?;
+    Ok(json_ok(json!({
+        "enabled": cfg.enabled,
+        "client_id": cfg.client_id,
+        "secret_set": !cfg.client_secret.is_empty(),
+        "allowed_domain": cfg.allowed_domain,
+        // The exact URI to register under "Authorized redirect URIs" in GCP.
+        "redirect_uri": google_redirect_uri(&state, &headers),
+    })))
+}
+
+#[derive(Deserialize)]
+struct OAuthUpdate {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    client_id: Option<String>,
+    /// Empty/absent keeps the existing secret.
+    #[serde(default)]
+    client_secret: Option<String>,
+    #[serde(default)]
+    allowed_domain: Option<String>,
+}
+
+async fn update_oauth_settings(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Json(req): Json<OAuthUpdate>,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let db = state.db();
+    if let Some(v) = req.enabled {
+        db::settings::set(db, "oauth_google_enabled", if v { "true" } else { "false" }).await?;
+    }
+    if let Some(v) = req.client_id {
+        db::settings::set(db, "oauth_google_client_id", v.trim()).await?;
+    }
+    if let Some(v) = req.client_secret {
+        if !v.is_empty() {
+            db::settings::set(db, "oauth_google_client_secret", v.trim()).await?;
+        }
+    }
+    if let Some(v) = req.allowed_domain {
+        db::settings::set(
+            db,
+            "oauth_google_allowed_domain",
+            &v.trim().to_ascii_lowercase(),
+        )
+        .await?;
+    }
+    db::audit::record(db, Some(&user.id), None, "oauth.update", None, None)
         .await
         .ok();
     Ok(json_ok(json!({ "ok": true })))

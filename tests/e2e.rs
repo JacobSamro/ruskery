@@ -413,6 +413,99 @@ async fn end_to_end() {
         "pull via CDN host must match"
     );
 
+    // ── Google sign-in configuration + flow entrypoints ──────────────
+    let prov: serde_json::Value = reg
+        .get(format!("{base}/api/v1/auth/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(prov["google"], false, "google off until configured");
+
+    let oauth_put = dash
+        .put(format!("{base}/api/v1/settings/oauth"))
+        .json(&json!({
+            "enabled": true,
+            "client_id": "test-client.apps.googleusercontent.com",
+            "client_secret": "test-secret",
+            "allowed_domain": "example.com"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(oauth_put.status(), 200);
+
+    let oauth_get: serde_json::Value = dash
+        .get(format!("{base}/api/v1/settings/oauth"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(oauth_get["enabled"], true);
+    assert_eq!(
+        oauth_get["secret_set"], true,
+        "secret stored but not returned"
+    );
+    assert!(
+        oauth_get["client_secret"].is_null(),
+        "secret must never be returned"
+    );
+    assert!(oauth_get["redirect_uri"]
+        .as_str()
+        .unwrap()
+        .ends_with("/api/v1/auth/google/callback"));
+
+    // Provider now advertised on the login page.
+    let prov2: serde_json::Value = reg
+        .get(format!("{base}/api/v1/auth/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(prov2["google"], true);
+
+    // /login starts the dance: 303 to Google with a CSRF state cookie.
+    let start = no_redirect_client()
+        .get(format!("{base}/api/v1/auth/google/login"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 303);
+    let goto = start.headers().get("location").unwrap().to_str().unwrap();
+    assert!(
+        goto.contains("accounts.google.com"),
+        "redirects to Google: {goto}"
+    );
+    assert!(goto.contains("test-client.apps.googleusercontent.com"));
+    assert!(start
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .any(|v| v.to_str().unwrap_or("").contains("ruskery_oauth_state")));
+
+    // Callback with a forged CSRF state bounces back to the login page.
+    let cb = no_redirect_client()
+        .get(format!(
+            "{base}/api/v1/auth/google/callback?code=x&state=forged"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cb.status(), 303);
+    assert!(cb
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("/login"));
+
     // ── dashboard: users, members, teams ─────────────────────────────
     let mk_user = dash
         .post(format!("{base}/api/v1/users"))

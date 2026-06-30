@@ -25,6 +25,7 @@ self-contained binary with no runtime services to manage.
 - ⚡ **Pulls served from the CDN.** `307` redirect to presigned Tigris URLs — layer bytes never touch the server.
 - 🔐 **Private & multi‑tenant.** Organizations → teams → users, with per‑repository `pull`/`push`/`admin` grants.
 - 🔑 **Real auth.** Argon2id passwords, personal access tokens for `docker login`, short‑lived scoped JWTs for the registry.
+- 🔓 **Google sign-in (optional).** Configure an OAuth client right in the dashboard (it shows the exact redirect URI for the Google Cloud console); restrict to an email domain to auto-provision your team.
 - 🌐 **Automatic HTTPS.** Add a domain in the dashboard; certificates are issued and renewed via Let's Encrypt (no certbot).
 - 🧹 **Garbage collection.** Mark‑and‑sweep of unreferenced blobs, on a schedule or on demand.
 - 📊 **Dashboard.** Browse repos & tags, manage members/teams/tokens, connect domains, read the audit log.

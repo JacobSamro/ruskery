@@ -1,6 +1,7 @@
 //! Authentication: password hashing, PATs, registry JWTs, RBAC, sessions, and
 //! the request extractors that enforce them.
 
+pub mod oauth;
 pub mod password;
 pub mod pat;
 pub mod rbac;

@@ -57,6 +57,51 @@ async function saveStorage() {
   }
 }
 
+// Google sign-in (OAuth).
+const oauth = reactive({
+  enabled: false,
+  client_id: "",
+  client_secret: "",
+  secret_set: false,
+  allowed_domain: "",
+  redirect_uri: "",
+});
+const oauthError = ref("");
+const oauthSaved = ref(false);
+const redirectCopied = ref(false);
+
+async function loadOauth() {
+  if (!me.value?.user.is_admin) return;
+  const o = await api.get<typeof oauth>("/api/v1/settings/oauth");
+  Object.assign(oauth, o, { client_secret: "" });
+}
+
+async function saveOauth() {
+  oauthError.value = "";
+  oauthSaved.value = false;
+  try {
+    const body: Record<string, unknown> = {
+      enabled: oauth.enabled,
+      client_id: oauth.client_id,
+      allowed_domain: oauth.allowed_domain,
+    };
+    if (oauth.client_secret) body.client_secret = oauth.client_secret;
+    await api.put("/api/v1/settings/oauth", body);
+    oauth.client_secret = "";
+    oauthSaved.value = true;
+    await loadOauth();
+    setTimeout(() => (oauthSaved.value = false), 2000);
+  } catch (e) {
+    oauthError.value = apiErrorMessage(e);
+  }
+}
+
+function copyRedirect() {
+  navigator.clipboard?.writeText(oauth.redirect_uri);
+  redirectCopied.value = true;
+  setTimeout(() => (redirectCopied.value = false), 1500);
+}
+
 // Custom domains / TLS.
 interface DomainRow {
   domain: string;
@@ -104,6 +149,7 @@ onMounted(() => {
   loadUsers();
   loadDomains();
   loadStorage();
+  loadOauth();
 });
 
 async function addUser() {
@@ -202,6 +248,61 @@ docker push {{ host }}/{{ slug }}/my-image:latest</code></pre>
             <p v-else-if="storageSaved" class="text-sm text-[var(--color-primary)]">Saved — applied live.</p>
             <span v-else></span>
             <UiButton type="submit">Save storage</UiButton>
+          </div>
+        </form>
+      </UiCard>
+
+      <UiCard
+        v-if="me?.user.is_admin"
+        title="Sign in with Google"
+        description="Let users authenticate with Google. Create an OAuth client in Google Cloud and paste its credentials here."
+      >
+        <form class="flex flex-col gap-4" @submit.prevent="saveOauth">
+          <label class="flex items-center gap-2 text-sm">
+            <input v-model="oauth.enabled" type="checkbox" /> Enable Google sign-in
+          </label>
+
+          <div class="flex flex-col gap-1.5">
+            <label class="text-sm font-medium">Authorized redirect URI</label>
+            <div class="flex items-center gap-2 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs">
+              <span class="flex-1 break-all">{{ oauth.redirect_uri }}</span>
+              <UiButton variant="ghost" size="sm" type="button" @click="copyRedirect">
+                <UiIcon :name="redirectCopied ? 'check' : 'copy'" :size="14" />
+              </UiButton>
+            </div>
+            <p class="text-xs text-[var(--color-muted)]">
+              Add this exact URL under <span class="text-[var(--color-fg)]">APIs &amp; Services → Credentials →
+              your OAuth client → Authorized redirect URIs</span> in the Google Cloud console.
+              (Set <code class="text-[var(--color-fg)]">server.public_url</code> so this stays stable.)
+            </p>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <label class="text-sm font-medium">Client ID</label>
+            <UiInput v-model="oauth.client_id" placeholder="xxxxx.apps.googleusercontent.com" />
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-sm font-medium">Client secret</label>
+            <UiInput
+              v-model="oauth.client_secret"
+              type="password"
+              :placeholder="oauth.secret_set ? '•••••••• (unchanged)' : 'paste client secret'"
+            />
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-sm font-medium">Allowed email domain <span class="text-[var(--color-muted)]">(optional)</span></label>
+            <UiInput v-model="oauth.allowed_domain" placeholder="yourcompany.com" />
+            <p class="text-xs text-[var(--color-muted)]">
+              If set, only verified emails in this domain may sign in — and they're auto-created on first
+              login. Leave blank to allow Google sign-in only for users that already have an account.
+            </p>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <p v-if="oauthError" class="text-sm text-red-400">{{ oauthError }}</p>
+            <p v-else-if="oauthSaved" class="text-sm text-[var(--color-primary)]">Saved.</p>
+            <span v-else></span>
+            <UiButton type="submit">Save Google sign-in</UiButton>
           </div>
         </form>
       </UiCard>
