@@ -30,7 +30,8 @@ pub async fn serve(state: AppState, app: Router) -> anyhow::Result<()> {
 
     // HTTP listener: redirect everything to HTTPS.
     let http_addr = state.config().server.http_addr.clone();
-    tokio::spawn(redirect_server(http_addr));
+    let public_url = state.config().server.public_url.clone();
+    tokio::spawn(redirect_server(http_addr, public_url));
 
     let https_addr = state.config().server.https_addr.clone();
     loop {
@@ -125,8 +126,11 @@ async fn run_acme(
 }
 
 /// Plain-HTTP server that 308-redirects every request to its HTTPS equivalent.
-async fn redirect_server(addr: String) {
-    let app = Router::new().fallback(redirect_to_https);
+async fn redirect_server(addr: String, public_url: String) {
+    let app = Router::new().fallback(move |req: Request| {
+        let public_url = public_url.clone();
+        async move { redirect_to_https(req, &public_url) }
+    });
     match TcpListener::bind(&addr).await {
         Ok(listener) => {
             tracing::info!(%addr, "ruskery listening (http→https redirect)");
@@ -138,18 +142,27 @@ async fn redirect_server(addr: String) {
     }
 }
 
-async fn redirect_to_https(req: Request) -> Response {
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(':').next().unwrap_or(h).to_string());
+/// Build the HTTPS redirect target. Prefer the configured `public_url` (no
+/// open redirect via a spoofed `Host`); fall back to the request host only when
+/// no public URL is set (e.g. local dev).
+fn redirect_to_https(req: Request, public_url: &str) -> Response {
     let path = req
         .uri()
         .path_and_query()
         .map(|p| p.as_str())
         .unwrap_or("/");
-    match host {
+
+    if !public_url.is_empty() {
+        let base = public_url.trim_end_matches('/');
+        return Redirect::permanent(&format!("{base}{path}")).into_response();
+    }
+
+    match req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.split(':').next().unwrap_or(h).to_string())
+    {
         Some(h) => Redirect::permanent(&format!("https://{h}{path}")).into_response(),
         None => (StatusCode::BAD_REQUEST, "missing host").into_response(),
     }

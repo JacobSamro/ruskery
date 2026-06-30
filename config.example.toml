@@ -7,6 +7,8 @@ http_addr = "0.0.0.0:80"
 https_addr = "0.0.0.0:443"
 public_url = "https://registry.example.com"
 max_body_bytes = 33554432            # 32 MiB cap for non-streamed bodies
+trust_proxy = false                  # true only behind a trusted proxy that sets
+                                     # X-Forwarded-For / X-Real-IP (rate limiting)
 
 [database]
 path = "/var/lib/ruskery/ruskery.db"
@@ -36,3 +38,4 @@ cache_dir = "/var/lib/ruskery/acme"
 
 [gc]
 interval_secs = 0                    # background blob GC interval; 0 disables (run `ruskery gc`)
+grace_secs = 3600                    # never collect blobs younger than this (protects in-flight pushes)

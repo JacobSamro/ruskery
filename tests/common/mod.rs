@@ -241,6 +241,7 @@ impl Ruskery {
             .env("RUSKERY_STORAGE__ACCESS_KEY_ID", "test")
             .env("RUSKERY_STORAGE__SECRET_ACCESS_KEY", "test")
             .env("RUSKERY_STORAGE__FORCE_PATH_STYLE", "true")
+            .env("RUSKERY_GC__GRACE_SECS", "0")
             .spawn()
             .expect("failed to spawn ruskery binary");
 
@@ -279,6 +280,7 @@ impl Ruskery {
             .env("RUSKERY_STORAGE__ACCESS_KEY_ID", "test")
             .env("RUSKERY_STORAGE__SECRET_ACCESS_KEY", "test")
             .env("RUSKERY_STORAGE__FORCE_PATH_STYLE", "true")
+            .env("RUSKERY_GC__GRACE_SECS", "0")
             .output()
             .expect("failed to run gc");
         String::from_utf8_lossy(&out.stdout).into_owned()

@@ -60,14 +60,19 @@ pub struct UploadSession {
     pub parts: Vec<CompletedPart>,
     pub next_part: i32,
     pub total: u64,
+    /// The storage client bound at creation — used for every operation on this
+    /// upload so a mid-flight settings hot-swap can't split a multipart upload
+    /// across two different endpoints/buckets.
+    pub storage: Arc<Storage>,
 }
 
 impl UploadSession {
     /// Append bytes, flushing full multipart parts to storage as they fill.
-    async fn write(&mut self, storage: &Storage, chunk: &[u8]) -> Result<()> {
+    async fn write(&mut self, chunk: &[u8]) -> Result<()> {
         self.hasher.update(chunk);
         self.total += chunk.len() as u64;
         self.buffer.extend_from_slice(chunk);
+        let storage = self.storage.clone();
         while self.buffer.len() >= PART_SIZE {
             let part: Vec<u8> = self.buffer.drain(..PART_SIZE).collect();
             let completed = storage
@@ -78,6 +83,28 @@ impl UploadSession {
         }
         Ok(())
     }
+}
+
+fn unknown_upload() -> Error {
+    Error::oci(
+        StatusCode::NOT_FOUND,
+        "BLOB_UPLOAD_UNKNOWN",
+        "unknown upload",
+    )
+}
+
+/// Fetch a session, ensuring it belongs to the authorized org (so a leaked
+/// upload UUID can't be driven from a different tenant's repository path).
+async fn locked_session(
+    state: &AppState,
+    upload_id: &str,
+    org_id: &str,
+) -> Result<Arc<Mutex<UploadSession>>> {
+    let session = state.uploads().get(upload_id).ok_or_else(unknown_upload)?;
+    if session.lock().await.org_id != org_id {
+        return Err(unknown_upload());
+    }
+    Ok(session)
 }
 
 /// `POST /v2/<name>/blobs/uploads/` — start an upload, or cross-repo mount.
@@ -97,7 +124,8 @@ pub async fn start(
 
     let upload_id = uuid::Uuid::new_v4().to_string();
     let temp_key = Storage::upload_key(org_id, &upload_id);
-    let s3_upload_id = state.storage().create_multipart(&temp_key).await?;
+    let storage = state.storage();
+    let s3_upload_id = storage.create_multipart(&temp_key).await?;
 
     state.uploads().insert(
         upload_id.clone(),
@@ -111,6 +139,7 @@ pub async fn start(
             parts: Vec::new(),
             next_part: 1,
             total: 0,
+            storage,
         },
     );
 
@@ -118,21 +147,20 @@ pub async fn start(
 }
 
 /// `PATCH /v2/<name>/blobs/uploads/<uuid>` — stream a chunk.
-pub async fn patch(state: &AppState, name: &str, upload_id: &str, body: Body) -> Result<Response> {
-    let session = state.uploads().get(upload_id).ok_or_else(|| {
-        Error::oci(
-            StatusCode::NOT_FOUND,
-            "BLOB_UPLOAD_UNKNOWN",
-            "unknown upload",
-        )
-    })?;
+pub async fn patch(
+    state: &AppState,
+    org_id: &str,
+    name: &str,
+    upload_id: &str,
+    body: Body,
+) -> Result<Response> {
+    let session = locked_session(state, upload_id, org_id).await?;
     let mut s = session.lock().await;
-    let storage = state.storage();
 
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::bad_request(format!("body read: {e}")))?;
-        s.write(&storage, &chunk).await?;
+        s.write(&chunk).await?;
     }
 
     let total = s.total;
@@ -144,26 +172,21 @@ pub async fn patch(state: &AppState, name: &str, upload_id: &str, body: Body) ->
 /// verify the digest, and commit the blob to its content-addressed key.
 pub async fn finish(
     state: &AppState,
+    org_id: &str,
     name: &str,
     upload_id: &str,
     expected_digest: &str,
     body: Body,
 ) -> Result<Response> {
-    let session = state.uploads().get(upload_id).ok_or_else(|| {
-        Error::oci(
-            StatusCode::NOT_FOUND,
-            "BLOB_UPLOAD_UNKNOWN",
-            "unknown upload",
-        )
-    })?;
+    let session = locked_session(state, upload_id, org_id).await?;
     let mut s = session.lock().await;
-    let storage = state.storage();
+    let storage = s.storage.clone();
 
     // Absorb any bytes sent with the final PUT.
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::bad_request(format!("body read: {e}")))?;
-        s.write(&storage, &chunk).await?;
+        s.write(&chunk).await?;
     }
 
     let computed = format!("sha256:{}", hex::encode(s.hasher.clone().finalize()));
@@ -224,24 +247,23 @@ pub async fn finish(
 }
 
 /// `GET /v2/<name>/blobs/uploads/<uuid>` — report upload progress.
-pub async fn status(state: &AppState, name: &str, upload_id: &str) -> Result<Response> {
-    let session = state.uploads().get(upload_id).ok_or_else(|| {
-        Error::oci(
-            StatusCode::NOT_FOUND,
-            "BLOB_UPLOAD_UNKNOWN",
-            "unknown upload",
-        )
-    })?;
+pub async fn status(
+    state: &AppState,
+    org_id: &str,
+    name: &str,
+    upload_id: &str,
+) -> Result<Response> {
+    let session = locked_session(state, upload_id, org_id).await?;
     let total = session.lock().await.total;
     Ok(accepted_response(name, upload_id, total))
 }
 
 /// `DELETE /v2/<name>/blobs/uploads/<uuid>` — cancel an upload.
-pub async fn cancel(state: &AppState, upload_id: &str) -> Result<Response> {
-    if let Some(session) = state.uploads().get(upload_id) {
+pub async fn cancel(state: &AppState, org_id: &str, upload_id: &str) -> Result<Response> {
+    if let Ok(session) = locked_session(state, upload_id, org_id).await {
         let s = session.lock().await;
-        let _ = state
-            .storage()
+        let _ = s
+            .storage
             .abort_multipart(&s.temp_key, &s.s3_upload_id)
             .await;
         drop(s);

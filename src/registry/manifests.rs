@@ -51,7 +51,17 @@ pub async fn put(
         .unwrap_or("application/vnd.oci.image.manifest.v1+json")
         .to_string();
 
-    let blob_refs = parse_blob_refs(&body);
+    // All OCI manifests/indexes are JSON; reject anything that isn't, so we
+    // never store junk that the pull/GC paths would treat as a real manifest.
+    let doc: serde_json::Value = serde_json::from_slice(&body).map_err(|_| {
+        Error::oci(
+            StatusCode::BAD_REQUEST,
+            "MANIFEST_INVALID",
+            "manifest is not valid JSON",
+        )
+    })?;
+
+    let blob_refs = parse_blob_refs_value(&doc);
 
     // Ensure every referenced blob has actually been uploaded to this org.
     for r in &blob_refs {
@@ -173,10 +183,7 @@ pub async fn delete(
 
 /// Collect the blob digests (config + layers) a manifest references. Manifest
 /// indexes (which reference other manifests, not blobs) yield no blob refs here.
-fn parse_blob_refs(body: &[u8]) -> Vec<String> {
-    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return vec![];
-    };
+fn parse_blob_refs_value(v: &serde_json::Value) -> Vec<String> {
     let mut refs = Vec::new();
     if let Some(d) = v
         .get("config")

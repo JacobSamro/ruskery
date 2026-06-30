@@ -121,7 +121,10 @@ fi
 # service comes back up. Idempotent and safe to repeat.
 if id ruskery >/dev/null 2>&1 && command -v su >/dev/null 2>&1; then
   log "applying database migrations"
-  su -s /bin/sh ruskery -c "'$PREFIX/ruskery' --config '$CONFIG_DIR/config.toml' migrate" \
+  # Pass paths as positional args ($1, $2) rather than interpolating them into
+  # the shell command, so a crafted RUSKERY_PREFIX can't inject shell syntax.
+  su -s /bin/sh ruskery -c 'exec "$1" --config "$2" migrate' ruskery-migrate \
+    "$PREFIX/ruskery" "$CONFIG_DIR/config.toml" \
     >/dev/null 2>&1 || log "migrations will run on next service start"
 fi
 

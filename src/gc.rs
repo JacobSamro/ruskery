@@ -10,7 +10,8 @@ use crate::storage::Storage;
 
 /// Run one GC sweep, returning the number of blobs collected.
 pub async fn run(state: &AppState) -> anyhow::Result<usize> {
-    let unreferenced = db::content::unreferenced_blobs(state.db()).await?;
+    let cutoff = crate::util::rfc3339_in(-state.config().gc.grace_secs);
+    let unreferenced = db::content::unreferenced_blobs(state.db(), &cutoff).await?;
     let mut collected = 0;
     tracing::debug!(count = unreferenced.len(), "gc: unreferenced blobs found");
     for (org_id, digest) in unreferenced {

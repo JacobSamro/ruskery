@@ -24,17 +24,20 @@ fn is_sensitive(path: &str) -> bool {
     path == "/v2/token" || path == "/api/v1/auth/login" || path == "/api/v1/setup"
 }
 
-/// Best-effort client IP: honor `X-Forwarded-For`/`X-Real-IP` when behind a
-/// proxy, otherwise fall back to the peer socket address.
-fn client_ip(req: &Request) -> String {
-    let h = req.headers();
-    if let Some(xff) = h.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = xff.split(',').next() {
-            return first.trim().to_string();
+/// Client IP for rate-limit keying. Forwarded headers are honored ONLY when
+/// `trust_proxy` is set (i.e. a trusted proxy populates them); otherwise the
+/// real peer socket address is used so a client can't spoof a fresh key.
+fn client_ip(req: &Request, trust_proxy: bool) -> String {
+    if trust_proxy {
+        let h = req.headers();
+        if let Some(xff) = h.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = xff.split(',').next() {
+                return first.trim().to_string();
+            }
         }
-    }
-    if let Some(rip) = h.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        return rip.trim().to_string();
+        if let Some(rip) = h.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            return rip.trim().to_string();
+        }
     }
     req.extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -42,9 +45,9 @@ fn client_ip(req: &Request) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-pub async fn middleware(req: Request, next: Next) -> Response {
+pub async fn middleware(trust_proxy: bool, req: Request, next: Next) -> Response {
     if is_sensitive(req.uri().path()) {
-        let ip = client_ip(&req);
+        let ip = client_ip(&req, trust_proxy);
         if AUTH_LIMITER.check_key(&ip).is_err() {
             return (
                 StatusCode::TOO_MANY_REQUESTS,

@@ -204,6 +204,17 @@ async fn end_to_end() {
         .unwrap();
     assert_eq!(bad.status(), 400);
 
+    // A non-JSON manifest body is rejected outright.
+    let not_json = reg
+        .put(format!("{base}/v2/acme/app/manifests/junk"))
+        .header("content-type", "application/vnd.oci.image.manifest.v1+json")
+        .bearer_auth(&jwt)
+        .body("this is not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(not_json.status(), 400, "non-JSON manifest must be rejected");
+
     // tags + catalog.
     let tags: serde_json::Value = reg
         .get(format!("{base}/v2/acme/app/tags/list"))

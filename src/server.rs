@@ -52,9 +52,12 @@ pub fn router(state: AppState) -> Router {
         ));
     }
 
+    let trust_proxy = state.config().server.trust_proxy;
     router
         .layer(security_headers)
-        .layer(axum::middleware::from_fn(crate::rate_limit::middleware))
+        .layer(axum::middleware::from_fn(move |req, next| {
+            crate::rate_limit::middleware(trust_proxy, req, next)
+        }))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

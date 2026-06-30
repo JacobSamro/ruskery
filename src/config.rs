@@ -35,13 +35,18 @@ pub struct Config {
 pub struct GcConfig {
     /// Interval (seconds) for the background blob GC sweep. 0 disables it.
     pub interval_secs: u64,
+    /// Blobs younger than this (seconds) are never collected — a grace window
+    /// protecting freshly-uploaded blobs whose manifest isn't committed yet.
+    pub grace_secs: i64,
 }
 
-#[allow(clippy::derivable_impls)]
 impl Default for GcConfig {
     fn default() -> Self {
         // Off by default; run `ruskery gc` manually or set an interval.
-        Self { interval_secs: 0 }
+        Self {
+            interval_secs: 0,
+            grace_secs: 3600,
+        }
     }
 }
 
@@ -57,6 +62,11 @@ pub struct ServerConfig {
     pub public_url: String,
     /// Maximum size (bytes) accepted for a single upload PATCH chunk / manifest.
     pub max_body_bytes: usize,
+    /// Trust `X-Forwarded-For` / `X-Real-IP` for the client IP (rate limiting).
+    /// Enable only when behind a trusted reverse proxy / load balancer that
+    /// sets these; otherwise the peer socket address is used.
+    #[serde(default)]
+    pub trust_proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +133,7 @@ impl Default for ServerConfig {
             // 0 means "fall back to a large streaming-friendly default"; the
             // registry streams uploads, so this only bounds non-stream bodies.
             max_body_bytes: 32 * 1024 * 1024,
+            trust_proxy: false,
         }
     }
 }

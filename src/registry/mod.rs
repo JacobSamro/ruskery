@@ -67,6 +67,22 @@ struct Parsed {
     op: Op,
 }
 
+/// A registry name is `<org>/<repo...>`: at least two path components, each
+/// non-empty and drawn from the OCI repository-name character set.
+fn valid_repo_name(name: &str) -> bool {
+    let segs: Vec<&str> = name.split('/').collect();
+    if segs.len() < 2 {
+        return false;
+    }
+    segs.iter().all(|s| {
+        !s.is_empty()
+            && s.len() <= 255
+            && s.bytes().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-')
+            })
+    })
+}
+
 /// Parse the path after `/v2/` into a repository name + operation.
 fn parse_route(rest: &str) -> Option<Parsed> {
     if let Some(name) = rest.strip_suffix("/tags/list") {
@@ -136,6 +152,17 @@ async fn dispatch(
         return Error::oci(StatusCode::NOT_FOUND, "NAME_UNKNOWN", "unknown route").into_response();
     };
     let name = parsed.name;
+
+    // Reject empty/malformed repository names (e.g. `org//repo`) before any
+    // auth or storage decision.
+    if !valid_repo_name(&name) {
+        return Error::oci(
+            StatusCode::BAD_REQUEST,
+            "NAME_INVALID",
+            "invalid repository name",
+        )
+        .into_response();
+    }
 
     // The action a request needs depends on the operation + method.
     let required = match (&parsed.op, &method) {
@@ -223,11 +250,11 @@ async fn dispatch(
             _ => unsupported(),
         },
         Op::UploadSession(uuid) => match method {
-            Method::PATCH => uploads::patch(&state, &name, &uuid, body).await,
+            Method::PATCH => uploads::patch(&state, &org.id, &name, &uuid, body).await,
             Method::PUT => {
                 let digest = uploads::query_param(&query, "digest").map(percent_decode);
                 match digest {
-                    Some(d) => uploads::finish(&state, &name, &uuid, &d, body).await,
+                    Some(d) => uploads::finish(&state, &org.id, &name, &uuid, &d, body).await,
                     None => Err(Error::oci(
                         StatusCode::BAD_REQUEST,
                         "DIGEST_INVALID",
@@ -235,8 +262,8 @@ async fn dispatch(
                     )),
                 }
             }
-            Method::GET => uploads::status(&state, &name, &uuid).await,
-            Method::DELETE => uploads::cancel(&state, &uuid).await,
+            Method::GET => uploads::status(&state, &org.id, &name, &uuid).await,
+            Method::DELETE => uploads::cancel(&state, &org.id, &uuid).await,
             _ => unsupported(),
         },
     };
@@ -269,7 +296,7 @@ async fn start_then_finish(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .ok_or_else(|| Error::Other(anyhow::anyhow!("upload id missing")))?;
-    uploads::finish(state, name, &upload_id, digest, body).await
+    uploads::finish(state, org_id, name, &upload_id, digest, body).await
 }
 
 /// Split a full repository name into its org + repo-within-org, resolving the org.
@@ -411,14 +438,26 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Compare two digests, tolerating case and a missing algorithm prefix.
+/// Compare two digests strictly: both must be a well-formed `<algo>:<hex>` with
+/// the same algorithm and hex (case-insensitive). A missing prefix, unknown
+/// algorithm, or wrong-length/non-hex digest never matches.
 pub(crate) fn digests_equal(a: &str, b: &str) -> bool {
-    fn norm(d: &str) -> String {
-        let d = d.to_ascii_lowercase();
-        match d.split_once(':') {
-            Some((_, hex)) => hex.to_string(),
-            None => d,
+    fn parsed(d: &str) -> Option<(String, String)> {
+        let (algo, hex) = d.split_once(':')?;
+        let algo = algo.to_ascii_lowercase();
+        let hex = hex.to_ascii_lowercase();
+        let want_len = match algo.as_str() {
+            "sha256" => 64,
+            "sha512" => 128,
+            _ => return None,
+        };
+        if hex.len() != want_len || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
         }
+        Some((algo, hex))
     }
-    norm(a) == norm(b)
+    match (parsed(a), parsed(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }

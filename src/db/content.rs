@@ -49,16 +49,21 @@ pub async fn delete_blob(db: &Db, org_id: &str, digest: &str) -> Result<()> {
     Ok(())
 }
 
-/// Blobs not referenced by any manifest within their org — candidates for GC.
-pub async fn unreferenced_blobs(db: &Db) -> Result<Vec<(String, String)>> {
+/// Blobs not referenced by any manifest within their org and older than
+/// `created_before` (RFC3339). The age cutoff is a grace window so a blob that
+/// was just uploaded but not yet referenced by a manifest isn't collected out
+/// from under an in-flight push.
+pub async fn unreferenced_blobs(db: &Db, created_before: &str) -> Result<Vec<(String, String)>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT b.org_id, b.digest FROM blobs b
-         WHERE NOT EXISTS (
+         WHERE b.created_at < ?
+           AND NOT EXISTS (
             SELECT 1 FROM manifest_blobs mb
             JOIN repositories r ON r.id = mb.repo_id
             WHERE r.org_id = b.org_id AND mb.blob_digest = b.digest
          )",
     )
+    .bind(created_before)
     .fetch_all(db)
     .await?;
     Ok(rows)
