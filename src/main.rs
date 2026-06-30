@@ -9,6 +9,7 @@ mod db;
 mod error;
 mod gc;
 mod models;
+mod proxy;
 mod rate_limit;
 mod registry;
 mod server;
@@ -87,6 +88,23 @@ enum AdminCommand {
         username: String,
         #[arg(long, default_value = "member")]
         role: String,
+    },
+    /// Configure an org as a pull-through cache of an upstream registry.
+    SetUpstream {
+        #[arg(long)]
+        org: String,
+        /// Upstream base URL, e.g. https://registry-1.docker.io. Required
+        /// unless --clear.
+        #[arg(long)]
+        url: Option<String>,
+        /// Optional credentials for a private upstream.
+        #[arg(long)]
+        username: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        /// Remove the upstream config, making the org a normal writable org.
+        #[arg(long, default_value_t = false)]
+        clear: bool,
     },
     /// Set or clear an org's storage quota (bytes; 0 = unlimited).
     SetQuota {
@@ -214,6 +232,36 @@ async fn run_admin(pool: &db::Db, cmd: AdminCommand) -> anyhow::Result<()> {
                 org.slug,
                 role.as_str()
             );
+        }
+        AdminCommand::SetUpstream {
+            org,
+            url,
+            username,
+            password,
+            clear,
+        } => {
+            let org = db::orgs::find_org_by_slug(pool, &org)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("org not found"))?;
+            if clear {
+                db::orgs::set_org_upstream(pool, &org.id, None, None, None).await?;
+                println!("{} upstream cleared", org.slug);
+            } else {
+                let url =
+                    url.ok_or_else(|| anyhow::anyhow!("--url is required (or pass --clear)"))?;
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(anyhow::anyhow!("--url must be http(s)://…"));
+                }
+                db::orgs::set_org_upstream(
+                    pool,
+                    &org.id,
+                    Some(&url),
+                    username.as_deref(),
+                    password.as_deref(),
+                )
+                .await?;
+                println!("{} mirrors {}", org.slug, url);
+            }
         }
         AdminCommand::SetQuota { org, bytes } => {
             if let Some(b) = bytes {

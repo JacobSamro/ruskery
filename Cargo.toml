@@ -85,8 +85,9 @@ arc-swap = "1"
 # Bounded in-memory LRU for the manifest read cache (pull hot path)
 lru = "0.12"
 
-# Google OAuth (token exchange + userinfo over HTTPS)
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Google OAuth (token exchange + userinfo over HTTPS) and the pull-through
+# cache fetching manifests/blobs from an upstream registry (streamed).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Utilities
 anyhow = "1"

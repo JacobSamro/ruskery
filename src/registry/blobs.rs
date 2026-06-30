@@ -18,10 +18,11 @@ fn blob_unknown() -> Error {
 }
 
 /// `HEAD /v2/<name>/blobs/<digest>`
-pub async fn head(state: &AppState, org_id: &str, digest: &str) -> Result<Response> {
-    let size = db::content::blob_size(state.db(), org_id, digest)
-        .await?
-        .ok_or_else(blob_unknown)?;
+pub async fn head(state: &AppState, org_id: &str, repo: &str, digest: &str) -> Result<Response> {
+    let size = match db::content::blob_size(state.db(), org_id, digest).await? {
+        Some(s) => s,
+        None => ensure_cached(state, org_id, repo, digest).await?,
+    };
     Ok((
         StatusCode::OK,
         [
@@ -47,9 +48,10 @@ pub async fn get(
     user_id: &str,
     digest: &str,
 ) -> Result<Response> {
-    let size = db::content::blob_size(state.db(), org_id, digest)
-        .await?
-        .ok_or_else(blob_unknown)?;
+    let size = match db::content::blob_size(state.db(), org_id, digest).await? {
+        Some(s) => s,
+        None => ensure_cached(state, org_id, repo, digest).await?,
+    };
     let key = Storage::blob_key(org_id, digest);
     let url = state.storage().presign_get(&key).await?;
     state.usage().record(
@@ -70,6 +72,20 @@ pub async fn get(
         ],
     )
         .into_response())
+}
+
+/// Resolve a blob that isn't stored locally: if the org is a pull-through cache,
+/// fetch it from the upstream into object storage and return its size; otherwise
+/// it's genuinely unknown. Blobs are content-addressed, so a cached copy is
+/// digest-verified by [`crate::proxy::cache_blob`] before it's recorded.
+async fn ensure_cached(state: &AppState, org_id: &str, repo: &str, digest: &str) -> Result<i64> {
+    if let Some(up) = db::orgs::org_upstream(state.db(), org_id).await? {
+        crate::proxy::cache_blob(state, org_id, repo, digest, &up).await?;
+        if let Some(size) = db::content::blob_size(state.db(), org_id, digest).await? {
+            return Ok(size);
+        }
+    }
+    Err(blob_unknown())
 }
 
 /// `DELETE /v2/<name>/blobs/<digest>`

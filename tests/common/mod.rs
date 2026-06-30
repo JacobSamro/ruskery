@@ -210,6 +210,140 @@ fn etag(tag: String) -> Response {
     (StatusCode::OK, [(axum::http::header::ETAG, tag)]).into_response()
 }
 
+// ───────────────────── in-process upstream registry stub ─────────────────────
+
+/// A minimal upstream OCI registry serving one fixed image (`library/test`,
+/// tag `latest`) behind the bearer-token flow, for exercising the pull-through
+/// cache. Returns its base URL and the digests of what it holds.
+pub struct UpstreamStub {
+    pub base: String,
+    pub manifest_digest: String,
+    pub config_digest: String,
+    pub layer_digest: String,
+}
+
+struct UpState {
+    base: String,
+    blobs: HashMap<String, Vec<u8>>,
+    manifests: HashMap<String, (Vec<u8>, String)>,
+}
+
+/// Spawn the upstream registry stub on a random loopback port.
+pub async fn spawn_upstream_stub() -> UpstreamStub {
+    let layer = b"ruskery-upstream-layer-payload".to_vec();
+    let config = br#"{"architecture":"amd64","os":"linux"}"#.to_vec();
+    let layer_d = sha256_digest(&layer);
+    let config_d = sha256_digest(&config);
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_d,
+            "size": config.len(),
+        },
+        "layers": [{
+            "mediaType": "application/vnd.oci.image.layer.v1.tar",
+            "digest": layer_d,
+            "size": layer.len(),
+        }],
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    let manifest_d = sha256_digest(&manifest_bytes);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{}:{}", addr.ip(), addr.port());
+
+    let mut blobs = HashMap::new();
+    blobs.insert(config_d.clone(), config);
+    blobs.insert(layer_d.clone(), layer);
+    let mt = "application/vnd.oci.image.manifest.v1+json".to_string();
+    let mut manifests = HashMap::new();
+    manifests.insert("latest".to_string(), (manifest_bytes.clone(), mt.clone()));
+    manifests.insert(manifest_d.clone(), (manifest_bytes, mt));
+
+    let state = Arc::new(UpState {
+        base: base.clone(),
+        blobs,
+        manifests,
+    });
+    let app = Router::new()
+        .fallback(up_handle)
+        .layer(DefaultBodyLimit::disable())
+        .with_state(state);
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    UpstreamStub {
+        base,
+        manifest_digest: manifest_d,
+        config_digest: config_d,
+        layer_digest: layer_d,
+    }
+}
+
+async fn up_handle(
+    State(st): State<Arc<UpState>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    if method != Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    let path = uri.path();
+
+    // Token endpoint (anonymous — any caller gets the fixed token).
+    if path == "/token" {
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            r#"{"token":"upstream-token"}"#,
+        )
+            .into_response();
+    }
+    if path == "/v2" || path == "/v2/" {
+        return StatusCode::OK.into_response();
+    }
+
+    // Everything under /v2 requires the bearer token; otherwise challenge.
+    let authed = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        == Some("Bearer upstream-token");
+    if !authed {
+        let challenge = format!("Bearer realm=\"{}/token\",service=\"upstream\"", st.base);
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, challenge)],
+        )
+            .into_response();
+    }
+
+    if let Some(i) = path.find("/manifests/") {
+        let reference = &path[i + "/manifests/".len()..];
+        return match st.manifests.get(reference) {
+            Some((bytes, mt)) => (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, mt.clone())],
+                bytes.clone(),
+            )
+                .into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+    if let Some(i) = path.find("/blobs/") {
+        let digest = &path[i + "/blobs/".len()..];
+        return match st.blobs.get(digest) {
+            Some(bytes) => (StatusCode::OK, bytes.clone()).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
 // ───────────────────────── ruskery binary launcher ─────────────────────────
 
 /// A running `ruskery serve` child process; killed on drop.
@@ -278,6 +412,26 @@ impl Ruskery {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         r
+    }
+
+    /// Run a one-off `ruskery admin …` subcommand against the same db; returns
+    /// stdout. Admin commands touch only SQLite (no storage needed).
+    pub fn run_admin(&self, args: &[&str]) -> String {
+        let mut full: Vec<&str> = vec!["--config", "/nonexistent", "admin"];
+        full.extend_from_slice(args);
+        let out = Command::new(env!("CARGO_BIN_EXE_ruskery"))
+            .args(&full)
+            .env("RUST_LOG", "error")
+            .env("RUSKERY_DATABASE__PATH", &self.db_path)
+            .output()
+            .expect("failed to run admin");
+        assert!(
+            out.status.success(),
+            "admin {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
     /// Run a one-off `ruskery gc` against the same db + storage; returns stdout.

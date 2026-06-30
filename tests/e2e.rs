@@ -1923,3 +1923,155 @@ async fn quota_enforcement() {
         "re-push of an existing blob must not be quota-blocked"
     );
 }
+
+/// Pull-through cache: an org configured with an upstream serves images it
+/// doesn't hold by fetching + caching them from that upstream (manifests in
+/// SQLite, blobs streamed into object storage), and refuses direct pushes.
+#[tokio::test]
+async fn pull_through_cache() {
+    let stub = spawn_s3_stub().await;
+    let up = spawn_upstream_stub().await;
+    let rk = Ruskery::spawn(&stub).await;
+    let base = rk.base.clone();
+
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let reg = reqwest::Client::new();
+
+    // First-run setup (admin + the default org), then a separate mirror org.
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+
+    rk.run_admin(&["create-org", "--slug", "mirror", "--name", "Mirror"]);
+    rk.run_admin(&[
+        "add-member",
+        "--org",
+        "mirror",
+        "--username",
+        "admin",
+        "--role",
+        "owner",
+    ]);
+    rk.run_admin(&["set-upstream", "--org", "mirror", "--url", &up.base]);
+
+    let tok: serde_json::Value = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "ci" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pat = tok["token"].as_str().unwrap().to_string();
+
+    let jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pat,
+        "repository:mirror/library/test:pull",
+    )
+    .await;
+
+    // Pull the manifest by tag: a local miss that the proxy fills from upstream.
+    let m = reg
+        .get(format!("{base}/v2/mirror/library/test/manifests/latest"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(m.status(), 200, "manifest should be proxied from upstream");
+    assert_eq!(
+        m.headers()
+            .get("docker-content-digest")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        up.manifest_digest
+    );
+    let m_bytes = m.bytes().await.unwrap();
+    assert_eq!(sha256_digest(&m_bytes), up.manifest_digest);
+
+    // The config + layer blobs are cached into object storage and served as a
+    // 307 redirect to the (stub) presigned URL.
+    let noredir = no_redirect_client();
+    for d in [&up.config_digest, &up.layer_digest] {
+        let r = noredir
+            .get(format!("{base}/v2/mirror/library/test/blobs/{d}"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 307, "blob {d} should be cached + redirected");
+    }
+
+    // Following the redirect yields the real bytes, with the right digest.
+    let layer = reg
+        .get(format!(
+            "{base}/v2/mirror/library/test/blobs/{}",
+            up.layer_digest
+        ))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(layer.status(), 200);
+    assert_eq!(
+        sha256_digest(&layer.bytes().await.unwrap()),
+        up.layer_digest
+    );
+
+    // A second manifest pull is served from the local cache.
+    let m2 = reg
+        .get(format!("{base}/v2/mirror/library/test/manifests/latest"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(m2.status(), 200);
+
+    // Pull by digest also works (now cached locally).
+    let by_digest = reg
+        .get(format!(
+            "{base}/v2/mirror/library/test/manifests/{}",
+            up.manifest_digest
+        ))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_digest.status(), 200);
+
+    // A pull-through cache is read-only: an upload to it is refused even with a
+    // push-capable token.
+    let push_jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pat,
+        "repository:mirror/library/test:pull,push",
+    )
+    .await;
+    let start = reg
+        .post(format!("{base}/v2/mirror/library/test/blobs/uploads/"))
+        .bearer_auth(&push_jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        start.status(),
+        403,
+        "push to a pull-through cache must be denied"
+    );
+}

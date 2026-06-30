@@ -8,6 +8,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Pull-through cache (registry mirror).** An org can be configured to mirror
+  an upstream OCI registry (`ruskery admin set-upstream --org <slug> --url
+  https://registry-1.docker.io [--username --password]`). A pull that misses
+  locally is fetched from the upstream — via the registry bearer-token flow,
+  with the org's optional credentials — cached under the org (manifests in
+  SQLite, blob bytes streamed into object storage) and served; subsequent pulls
+  are local. Caching is lazy and per-request: a normal `docker pull` fetches the
+  index, then the platform manifest, then the config and layer blobs, and each
+  is cached as it passes through. Fetched blobs are SHA-256-verified before being
+  recorded, and a manifest pulled by digest is checked against it. A mirror org
+  is read-only — direct pushes are refused with `403 DENIED`. (Tag
+  re-validation against the upstream is not yet implemented; a cached tag is
+  served until evicted. Pull by digest is always exact.)
+
 - **Storage quotas & upload-size limits.** A per-org storage cap and a
   single-blob size cap, both opt-in. `[quota] max_blob_bytes` rejects an
   over-size blob *while it streams* (`413`), so it's never fully written to

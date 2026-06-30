@@ -22,7 +22,7 @@ fn manifest_unknown() -> Error {
     )
 }
 
-fn is_digest(reference: &str) -> bool {
+pub(crate) fn is_digest(reference: &str) -> bool {
     reference.contains(':')
 }
 
@@ -146,7 +146,9 @@ pub async fn put(
     Ok(resp)
 }
 
-/// `GET`/`HEAD /v2/<name>/manifests/<reference>`
+/// `GET`/`HEAD /v2/<name>/manifests/<reference>`. Serves from local storage;
+/// on a miss, if the org is a pull-through cache, fetches + caches from the
+/// upstream and serves that.
 pub async fn get(
     state: &AppState,
     org: &Org,
@@ -154,9 +156,35 @@ pub async fn get(
     reference: &str,
     head_only: bool,
 ) -> Result<Response> {
-    let repo = db::orgs::find_repo(state.db(), &org.id, repo_name)
-        .await?
-        .ok_or_else(manifest_unknown)?;
+    if let Some(resp) = serve_local(state, org, repo_name, reference, head_only).await? {
+        return Ok(resp);
+    }
+
+    // Local miss: if this org mirrors an upstream, fetch + cache the manifest,
+    // then serve the freshly-cached copy.
+    if let Some(up) = db::orgs::org_upstream(state.db(), &org.id).await? {
+        crate::proxy::cache_manifest(state, org, repo_name, reference, &up).await?;
+        if let Some(resp) = serve_local(state, org, repo_name, reference, head_only).await? {
+            return Ok(resp);
+        }
+    }
+
+    Err(manifest_unknown())
+}
+
+/// Serve a manifest from local storage (DB + read cache). Returns `Ok(None)` —
+/// not an error — when the repo, tag, or manifest isn't present locally, so the
+/// caller can decide whether to consult an upstream.
+async fn serve_local(
+    state: &AppState,
+    org: &Org,
+    repo_name: &str,
+    reference: &str,
+    head_only: bool,
+) -> Result<Option<Response>> {
+    let Some(repo) = db::orgs::find_repo(state.db(), &org.id, repo_name).await? else {
+        return Ok(None);
+    };
 
     // Snapshot the cache generation before any DB read so a populate that races
     // a concurrent delete/re-push is dropped instead of caching stale content.
@@ -169,13 +197,15 @@ pub async fn get(
     } else if let Some(d) = state.cache().get_tag(&repo.id, reference) {
         d
     } else {
-        let d = db::content::tag_digest(state.db(), &repo.id, reference)
-            .await?
-            .ok_or_else(manifest_unknown)?;
-        state
-            .cache()
-            .put_tag_if_current(&repo.id, reference, &d, gen);
-        d
+        match db::content::tag_digest(state.db(), &repo.id, reference).await? {
+            Some(d) => {
+                state
+                    .cache()
+                    .put_tag_if_current(&repo.id, reference, &d, gen);
+                d
+            }
+            None => return Ok(None),
+        }
     };
 
     // Manifest bytes are content-addressed: a cached `(repo, digest)` entry is
@@ -183,18 +213,20 @@ pub async fn get(
     let manifest = if let Some(m) = state.cache().get_manifest(&repo.id, &digest) {
         m
     } else {
-        let m = db::content::get_manifest_by_digest(state.db(), &repo.id, &digest)
-            .await?
-            .ok_or_else(manifest_unknown)?;
-        let cached = Arc::new(CachedManifest {
-            media_type: m.media_type,
-            size: m.size,
-            content: Bytes::from(m.content),
-        });
-        state
-            .cache()
-            .put_manifest_if_current(&repo.id, &digest, cached.clone(), gen);
-        cached
+        match db::content::get_manifest_by_digest(state.db(), &repo.id, &digest).await? {
+            Some(m) => {
+                let cached = Arc::new(CachedManifest {
+                    media_type: m.media_type,
+                    size: m.size,
+                    content: Bytes::from(m.content),
+                });
+                state
+                    .cache()
+                    .put_manifest_if_current(&repo.id, &digest, cached.clone(), gen);
+                cached
+            }
+            None => return Ok(None),
+        }
     };
 
     let common = [
@@ -206,11 +238,11 @@ pub async fn get(
         ),
     ];
 
-    if head_only {
-        Ok((StatusCode::OK, common).into_response())
+    Ok(Some(if head_only {
+        (StatusCode::OK, common).into_response()
     } else {
-        Ok((StatusCode::OK, common, manifest.content.clone()).into_response())
-    }
+        (StatusCode::OK, common, manifest.content.clone()).into_response()
+    }))
 }
 
 /// `DELETE /v2/<name>/manifests/<reference>`
@@ -323,7 +355,7 @@ pub async fn referrers(
 
 /// Collect the blob digests (config + layers) a manifest references. Manifest
 /// indexes (which reference other manifests, not blobs) yield no blob refs here.
-fn parse_blob_refs_value(v: &serde_json::Value) -> Vec<String> {
+pub(crate) fn parse_blob_refs_value(v: &serde_json::Value) -> Vec<String> {
     let mut refs = Vec::new();
     if let Some(d) = v
         .get("config")
@@ -343,7 +375,7 @@ fn parse_blob_refs_value(v: &serde_json::Value) -> Vec<String> {
 }
 
 /// Child manifest digests referenced by an image index / manifest list.
-fn parse_child_refs(v: &serde_json::Value) -> Vec<String> {
+pub(crate) fn parse_child_refs(v: &serde_json::Value) -> Vec<String> {
     v.get("manifests")
         .and_then(|m| m.as_array())
         .map(|arr| {
@@ -357,7 +389,7 @@ fn parse_child_refs(v: &serde_json::Value) -> Vec<String> {
 /// The `subject` a manifest refers to (OCI 1.1), with its artifact type. The
 /// artifact type is `artifactType` when present, else the config media type
 /// (the OCI fallback for image manifests used as artifacts).
-fn parse_subject(v: &serde_json::Value) -> Option<(String, String)> {
+pub(crate) fn parse_subject(v: &serde_json::Value) -> Option<(String, String)> {
     let subject = v.get("subject")?.get("digest")?.as_str()?.to_string();
     let artifact_type = v
         .get("artifactType")

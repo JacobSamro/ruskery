@@ -212,6 +212,23 @@ async fn dispatch(
             .into_response();
     };
 
+    // A pull-through cache mirrors an upstream and is read-only: refuse client
+    // pushes (Push). DELETE (Admin) is deliberately still allowed so an admin
+    // can evict cached content — it is self-healing, the next pull re-fetches
+    // from the upstream.
+    if matches!(required, Permission::Push)
+        && db::orgs::org_is_proxy(state.db(), &org.id)
+            .await
+            .unwrap_or(false)
+    {
+        return Error::oci(
+            StatusCode::FORBIDDEN,
+            "DENIED",
+            "organization is a pull-through cache (read-only)",
+        )
+        .into_response();
+    }
+
     // Classify this request for usage analytics *before* the match consumes
     // `parsed.op`. The optional digest is used to attribute bytes.
     let metric: Option<(crate::analytics::Kind, Option<String>)> = match (&parsed.op, &method) {
@@ -270,7 +287,7 @@ async fn dispatch(
         },
         Op::Blob(digest) => match method {
             Method::GET => blobs::get(&state, &org.id, &repo_name, &claims.sub, &digest).await,
-            Method::HEAD => blobs::head(&state, &org.id, &digest).await,
+            Method::HEAD => blobs::head(&state, &org.id, &repo_name, &digest).await,
             Method::DELETE => blobs::delete(&state, &org.id, &digest).await,
             _ => unsupported(),
         },

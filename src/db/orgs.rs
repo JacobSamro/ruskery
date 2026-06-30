@@ -60,6 +60,68 @@ pub async fn create_org(db: &Db, slug: &str, name: &str) -> Result<Org> {
     })
 }
 
+/// An org's upstream-mirror configuration (set when it is a pull-through cache).
+#[derive(Debug, Clone)]
+pub struct OrgUpstream {
+    /// Base URL of the upstream registry, e.g. `https://registry-1.docker.io`.
+    pub url: String,
+    /// Optional credentials for a private upstream.
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+/// The org's upstream-mirror config, or `None` if it is a normal (writable) org.
+pub async fn org_upstream(db: &Db, org_id: &str) -> Result<Option<OrgUpstream>> {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT upstream_url, upstream_username, upstream_password FROM orgs WHERE id = ?",
+    )
+    .bind(org_id)
+    .fetch_optional(db)
+    .await?;
+    let nonempty = |s: Option<String>| s.filter(|v| !v.is_empty());
+    Ok(row.and_then(|(url, username, password)| {
+        nonempty(url).map(|url| OrgUpstream {
+            url: url.trim_end_matches('/').to_string(),
+            username: nonempty(username),
+            password: nonempty(password),
+        })
+    }))
+}
+
+/// Whether an org is a pull-through cache (and therefore read-only). Cheaper
+/// than [`org_upstream`] when only the boolean is needed (e.g. a push guard).
+pub async fn org_is_proxy(db: &Db, org_id: &str) -> Result<bool> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT upstream_url FROM orgs WHERE id = ?")
+            .bind(org_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row
+        .and_then(|r| r.0)
+        .map(|u| !u.is_empty())
+        .unwrap_or(false))
+}
+
+/// Set (or clear, with `None` url) an org's upstream-mirror configuration.
+pub async fn set_org_upstream(
+    db: &Db,
+    org_id: &str,
+    url: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE orgs SET upstream_url = ?, upstream_username = ?, upstream_password = ? WHERE id = ?",
+    )
+    .bind(url)
+    .bind(username)
+    .bind(password)
+    .bind(org_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// An org's storage-quota override in bytes, if one is set. `None` means the
 /// org has no override and the instance default ([quota] default_storage_bytes)
 /// applies; `Some(0)` means explicitly unlimited for this org.
