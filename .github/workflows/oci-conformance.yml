@@ -1,0 +1,107 @@
+name: oci conformance
+
+# Runs the official opencontainers/distribution-spec conformance suite (pull,
+# push, content-management, content-discovery/referrers) against a real ruskery
+# backed by RustFS. The credibility test for "is this actually a registry".
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSKERY_STORAGE__ENDPOINT: http://127.0.0.1:9000
+      RUSKERY_STORAGE__BUCKET: ruskery
+      RUSKERY_STORAGE__ACCESS_KEY_ID: ruskery
+      RUSKERY_STORAGE__SECRET_ACCESS_KEY: ruskerysecret
+      RUSKERY_STORAGE__FORCE_PATH_STYLE: "true"
+      RUSKERY_TLS__ENABLED: "false"
+      RUSKERY_SERVER__HTTP_ADDR: "127.0.0.1:8080"
+      RUSKERY_DATABASE__PATH: conformance.db
+      AWS_ACCESS_KEY_ID: ruskery
+      AWS_SECRET_ACCESS_KEY: ruskerysecret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start RustFS + create bucket
+        run: |
+          docker run -d --name rustfs -p 9000:9000 \
+            -e RUSTFS_ACCESS_KEY=ruskery -e RUSTFS_SECRET_KEY=ruskerysecret \
+            -e RUSTFS_ADDRESS=0.0.0.0:9000 \
+            rustfs/rustfs:latest
+          for i in $(seq 1 30); do
+            if aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://ruskery 2>/dev/null; then
+              echo "bucket created"; break
+            fi
+            echo "waiting for rustfs..."; sleep 2
+          done
+
+      # The release binary embeds the UI — build it after generating the UI.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build web UI
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run generate
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build ruskery
+        run: cargo build --release --locked
+
+      - name: Start ruskery + bootstrap an org/user/token
+        id: boot
+        run: |
+          set -euo pipefail
+          BIN=./target/release/ruskery
+          "$BIN" -c /nonexistent serve &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          "$BIN" -c /nonexistent admin create-user --email admin@example.com --username admin --password supersecret123
+          "$BIN" -c /nonexistent admin create-org --slug conformance --name Conformance
+          "$BIN" -c /nonexistent admin add-member --org conformance --username admin --role owner
+          TOKEN=$("$BIN" -c /nonexistent admin create-token --username admin --name conformance | tr -d '\r\n ')
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build the conformance suite
+        run: |
+          git clone --depth 1 --branch v1.1.1 \
+            https://github.com/opencontainers/distribution-spec.git
+          (cd distribution-spec/conformance && go test -c -o "$GITHUB_WORKSPACE/conformance.test")
+
+      - name: Run OCI conformance
+        env:
+          OCI_ROOT_URL: http://127.0.0.1:8080
+          OCI_NAMESPACE: conformance/test
+          OCI_CROSSMOUNT_NAMESPACE: conformance/test2
+          OCI_USERNAME: admin
+          OCI_PASSWORD: ${{ steps.boot.outputs.token }}
+          OCI_TEST_PULL: "1"
+          OCI_TEST_PUSH: "1"
+          OCI_TEST_CONTENT_MANAGEMENT: "1"
+          OCI_TEST_CONTENT_DISCOVERY: "1"
+        run: ./conformance.test
+
+      - name: Upload conformance report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: oci-conformance-report
+          path: |
+            report.html
+            junit.xml
+          retention-days: 14
