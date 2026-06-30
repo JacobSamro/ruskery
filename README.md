@@ -135,6 +135,10 @@ ruskery admin ...     # create-user / create-org / add-member / create-token
 
 ### Run with Docker
 
+Multi-arch images (`linux/amd64` + `linux/arm64`) are published to the GitHub
+Container Registry on every release — `ghcr.io/jacobsamro/ruskery`, tagged
+`latest`, `<major>.<minor>`, and the exact version (e.g. `0.1.0`):
+
 ```sh
 docker run -d --name ruskery -p 80:80 -p 443:443 \
   -v ruskery-data:/var/lib/ruskery \
