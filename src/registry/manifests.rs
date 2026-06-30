@@ -1,11 +1,14 @@
 //! Manifest handling. Manifest bytes are stored in SQLite for instant serving
 //! and tag resolution; their referenced blobs live in Tigris.
 
+use std::sync::Arc;
+
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
 
+use crate::cache::CachedManifest;
 use crate::db;
 use crate::db::orgs::Org;
 use crate::error::{Error, Result};
@@ -104,6 +107,13 @@ pub async fn put(
         db::content::upsert_tag(state.db(), &repo.id, reference, &digest).await?;
     }
 
+    // Keep the read cache consistent with the write: drop any stale bytes for
+    // this digest (media type could differ on re-push) and refresh the tag.
+    state.cache().invalidate_manifest(&repo.id, &digest);
+    if !is_digest(reference) {
+        state.cache().put_tag(&repo.id, reference, &digest);
+    }
+
     db::audit::record(
         state.db(),
         Some(actor_user_id),
@@ -148,21 +158,48 @@ pub async fn get(
         .await?
         .ok_or_else(manifest_unknown)?;
 
+    // Snapshot the cache generation before any DB read so a populate that races
+    // a concurrent delete/re-push is dropped instead of caching stale content.
+    let gen = state.cache().generation();
+
+    // Resolve the reference to a digest. Tag→digest is mutable, but the push and
+    // delete paths invalidate it, so a cache hit is authoritative.
     let digest = if is_digest(reference) {
         reference.to_string()
+    } else if let Some(d) = state.cache().get_tag(&repo.id, reference) {
+        d
     } else {
-        db::content::tag_digest(state.db(), &repo.id, reference)
+        let d = db::content::tag_digest(state.db(), &repo.id, reference)
             .await?
-            .ok_or_else(manifest_unknown)?
+            .ok_or_else(manifest_unknown)?;
+        state
+            .cache()
+            .put_tag_if_current(&repo.id, reference, &d, gen);
+        d
     };
 
-    let m = db::content::get_manifest_by_digest(state.db(), &repo.id, &digest)
-        .await?
-        .ok_or_else(manifest_unknown)?;
+    // Manifest bytes are content-addressed: a cached `(repo, digest)` entry is
+    // immutable, so the read can be served straight from memory.
+    let manifest = if let Some(m) = state.cache().get_manifest(&repo.id, &digest) {
+        m
+    } else {
+        let m = db::content::get_manifest_by_digest(state.db(), &repo.id, &digest)
+            .await?
+            .ok_or_else(manifest_unknown)?;
+        let cached = Arc::new(CachedManifest {
+            media_type: m.media_type,
+            size: m.size,
+            content: Bytes::from(m.content),
+        });
+        state
+            .cache()
+            .put_manifest_if_current(&repo.id, &digest, cached.clone(), gen);
+        cached
+    };
 
     let common = [
-        (header::CONTENT_TYPE, m.media_type),
-        (header::CONTENT_LENGTH, m.size.to_string()),
+        (header::CONTENT_TYPE, manifest.media_type.clone()),
+        (header::CONTENT_LENGTH, manifest.size.to_string()),
         (
             header::HeaderName::from_static("docker-content-digest"),
             digest,
@@ -172,7 +209,7 @@ pub async fn get(
     if head_only {
         Ok((StatusCode::OK, common).into_response())
     } else {
-        Ok((StatusCode::OK, common, m.content).into_response())
+        Ok((StatusCode::OK, common, manifest.content.clone()).into_response())
     }
 }
 
@@ -196,6 +233,13 @@ pub async fn delete(
     };
 
     db::content::delete_manifest(state.db(), &repo.id, &digest).await?;
+
+    // Drop the deleted bytes and every tag resolution for this repo (a deleted
+    // digest may have had several tags pointing at it), so a follow-up pull
+    // re-resolves from SQLite and correctly 404s.
+    state.cache().invalidate_manifest(&repo.id, &digest);
+    state.cache().invalidate_repo_tags(&repo.id);
+
     Ok(StatusCode::ACCEPTED.into_response())
 }
 

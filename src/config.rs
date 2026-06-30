@@ -32,6 +32,32 @@ pub struct Config {
     /// Usage analytics settings.
     #[serde(default)]
     pub analytics: AnalyticsConfig,
+    /// In-memory manifest read cache settings.
+    #[serde(default)]
+    pub cache: CacheConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Cache manifest bytes and tag→digest resolutions in memory on the pull
+    /// hot path, so a repeated pull skips the SQLite read. Safe because
+    /// manifests are content-addressed (immutable per digest) and the push /
+    /// delete paths invalidate tag resolutions.
+    pub enabled: bool,
+    /// Max number of manifest entries (keyed by digest) held in memory.
+    pub manifest_capacity: usize,
+    /// Max number of tag→digest resolutions held in memory.
+    pub tag_capacity: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            manifest_capacity: 1024,
+            tag_capacity: 1024,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +244,7 @@ impl Default for Config {
             tls: TlsConfig::default(),
             gc: GcConfig::default(),
             analytics: AnalyticsConfig::default(),
+            cache: CacheConfig::default(),
         }
     }
 }

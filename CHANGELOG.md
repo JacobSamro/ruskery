@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Manifest read cache (pull hot path).** A bounded in-memory LRU now fronts
+  the SQLite manifest read: repeated pulls of the same tag/digest serve the
+  manifest bytes (and the tag→digest resolution) straight from memory instead of
+  hitting the database. Safe because manifests are content-addressed (immutable
+  per digest) and the push/delete paths invalidate tag resolutions; a generation
+  counter drops any read-path cache fill that races a concurrent delete or
+  re-push, so a deleted manifest can never linger in the cache. Configurable via
+  `[cache] enabled / manifest_capacity / tag_capacity` (on by default, 1024
+  entries each).
+
 ### Fixed
 
 - **OCI conformance suite failed under rate limiting.** The registry token
