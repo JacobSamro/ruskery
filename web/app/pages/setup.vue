@@ -53,25 +53,25 @@ async function submit() {
         <div class="grid grid-cols-2 gap-3">
           <div class="flex flex-col gap-1.5">
             <label class="text-sm font-medium">Username</label>
-            <UiInput v-model="form.username" placeholder="admin" required />
+            <UiInput v-model="form.username" placeholder="admin" required data-testid="setup-username" />
           </div>
           <div class="flex flex-col gap-1.5">
             <label class="text-sm font-medium">Email</label>
-            <UiInput v-model="form.email" type="email" placeholder="admin@example.com" required />
+            <UiInput v-model="form.email" type="email" placeholder="admin@example.com" required data-testid="setup-email" />
           </div>
         </div>
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Password</label>
-          <UiInput v-model="form.password" type="password" placeholder="at least 8 characters" required />
+          <UiInput v-model="form.password" type="password" placeholder="at least 8 characters" required data-testid="setup-password" />
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div class="flex flex-col gap-1.5">
             <label class="text-sm font-medium">Organization</label>
-            <UiInput v-model="form.org_name" placeholder="Acme Inc" required />
+            <UiInput v-model="form.org_name" placeholder="Acme Inc" required data-testid="setup-org-name" />
           </div>
           <div class="flex flex-col gap-1.5">
             <label class="text-sm font-medium">Slug</label>
-            <UiInput v-model="form.org_slug" placeholder="acme" required />
+            <UiInput v-model="form.org_slug" placeholder="acme" required data-testid="setup-org-slug" />
           </div>
         </div>
         <p class="text-xs text-[var(--color-muted)]">

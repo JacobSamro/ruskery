@@ -169,7 +169,7 @@ function closeCreate() {
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Scope</label>
           <Select v-model="scopeType">
-            <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger class="w-full" data-testid="token-scope"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All my access</SelectItem>
               <SelectItem value="org">A single organization</SelectItem>
@@ -181,7 +181,7 @@ function closeCreate() {
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Permission</label>
           <Select v-model="scopePerm">
-            <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger class="w-full" data-testid="token-perm"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="admin">Full (read, write, delete)</SelectItem>
               <SelectItem value="push">Read &amp; write (pull + push)</SelectItem>
@@ -194,7 +194,7 @@ function closeCreate() {
         <div v-if="scopeType !== 'all'" class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Organization</label>
           <Select v-model="scopeOrg">
-            <SelectTrigger class="w-full"><SelectValue placeholder="Select an organization…" /></SelectTrigger>
+            <SelectTrigger class="w-full" data-testid="token-org"><SelectValue placeholder="Select an organization…" /></SelectTrigger>
             <SelectContent>
               <SelectItem v-for="o in orgs" :key="o.slug" :value="o.slug">{{ o.name }}</SelectItem>
             </SelectContent>

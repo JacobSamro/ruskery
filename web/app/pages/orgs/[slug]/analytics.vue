@@ -95,7 +95,7 @@ const storageSeries = computed(() => [
         </p>
       </div>
       <Select v-model="range">
-        <SelectTrigger class="w-36"><SelectValue /></SelectTrigger>
+        <SelectTrigger class="w-36" data-testid="range"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="7">Last 7 days</SelectItem>
           <SelectItem value="30">Last 30 days</SelectItem>
@@ -109,17 +109,17 @@ const storageSeries = computed(() => [
     <div v-else-if="data" class="flex flex-col gap-6">
       <!-- overview cards -->
       <div class="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <UiCard>
+        <UiCard data-testid="metric-pulls">
           <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Pulls</div>
           <div class="mt-1 text-2xl font-semibold">{{ data.overview.pulls.toLocaleString() }}</div>
           <div class="text-xs text-[var(--color-muted)]">last {{ data.range_days }}d</div>
         </UiCard>
-        <UiCard>
+        <UiCard data-testid="metric-pushes">
           <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Pushes</div>
           <div class="mt-1 text-2xl font-semibold">{{ data.overview.pushes.toLocaleString() }}</div>
           <div class="text-xs text-[var(--color-muted)]">last {{ data.range_days }}d</div>
         </UiCard>
-        <UiCard>
+        <UiCard data-testid="metric-storage">
           <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Storage</div>
           <div class="mt-1 text-2xl font-semibold">{{ bytes(data.overview.storage_bytes) }}</div>
           <div class="text-xs text-[var(--color-muted)]">{{ data.overview.storage_blobs.toLocaleString() }} blobs (dedup'd)</div>

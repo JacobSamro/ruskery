@@ -76,7 +76,7 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
         :model-value="currentSlug"
         @update:model-value="switchOrg"
       >
-        <SelectTrigger class="mb-4 w-full"><SelectValue placeholder="Select org" /></SelectTrigger>
+        <SelectTrigger class="mb-4 w-full" data-testid="org-switcher"><SelectValue placeholder="Select org" /></SelectTrigger>
         <SelectContent>
           <SelectItem v-for="o in me.orgs" :key="o.slug" :value="o.slug">{{ o.name }}</SelectItem>
         </SelectContent>
@@ -129,7 +129,7 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
           <div class="font-medium">{{ me?.user.username }}</div>
           <div class="truncate text-xs text-[var(--color-muted)]">{{ me?.user.email }}</div>
         </div>
-        <UiButton variant="ghost" size="sm" class="w-full !justify-start" @click="logout">
+        <UiButton variant="ghost" size="sm" class="w-full !justify-start" data-testid="sign-out" @click="logout">
           <UiIcon name="logout" :size="16" /> Sign out
         </UiButton>
       </div>

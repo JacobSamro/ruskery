@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dashboard end-to-end tests (Playwright).** Browser-level coverage of the
+  dashboard against the real binary (embedded UI + API on one origin): first-run
+  wizard, login + sign-out confirmation, org switcher, Organizations admin view,
+  tokens (scoped selects, reveal, revoke), members, teams, instance settings
+  (mandatory contact email, OAuth redirect URI), analytics render + range, and
+  authz guards — plus storage-backed repo/analytics specs that skip when no S3 is
+  present. Runs in CI (`dashboard-e2e.yml`) across Chromium/Firefox/WebKit.
+
 - **Org usage analytics.** A new per-org Analytics page (and
   `GET /api/v1/orgs/{slug}/analytics?range=30d`) showing pushes, pulls, storage
   (deduplicated), attributed egress, daily push/pull and storage-growth charts,
@@ -16,6 +24,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   daily rollup tables by a background task, so SQLite sees ~one batched upsert
   per flush regardless of pull volume. Push history is backfilled from the audit
   log on first run. Configurable via `[analytics] enabled / rollup_secs`.
+
+### Fixed
+
+- **Confirmation dialogs could resolve as "cancelled" when confirmed.** A race
+  between the AlertDialog's close event and the action button's click could
+  resolve the `useConfirm()` promise to `false` even when the user clicked the
+  confirm button (e.g. sign-out occasionally not signing out). The implicit
+  dismissal is now deferred so an explicit button choice always wins. Caught by
+  the new Playwright suite.
 
 ### Changed
 

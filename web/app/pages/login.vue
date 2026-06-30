@@ -50,11 +50,11 @@ async function submit() {
       <form class="flex flex-col gap-4" @submit.prevent="submit">
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Username or email</label>
-          <UiInput v-model="login" placeholder="you@example.com" required />
+          <UiInput v-model="login" placeholder="you@example.com" required data-testid="login-username" />
         </div>
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Password</label>
-          <UiInput v-model="password" type="password" placeholder="••••••••" required />
+          <UiInput v-model="password" type="password" placeholder="••••••••" required data-testid="login-password" />
         </div>
         <p v-if="error" class="text-sm text-red-400">{{ error }}</p>
         <UiButton type="submit" :disabled="busy">{{ busy ? "Signing in…" : "Sign in" }}</UiButton>

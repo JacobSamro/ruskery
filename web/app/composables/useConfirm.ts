@@ -44,12 +44,18 @@ export function useConfirm() {
     }
   }
 
-  // Dismissal via Esc / overlay click resolves false if nothing was decided.
+  // The dialog also emits close on Esc/overlay AND when an action/cancel button
+  // is pressed. Defer the implicit "false" to a microtask so an explicit
+  // decide(true/false) from a button click (same tick) always wins the race.
   function onOpenChange(open: boolean) {
     state.open = open;
-    if (!open && resolver) {
-      resolver(false);
-      resolver = null;
+    if (!open) {
+      queueMicrotask(() => {
+        if (resolver) {
+          resolver(false);
+          resolver = null;
+        }
+      });
     }
   }
 
