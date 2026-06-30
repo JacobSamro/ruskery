@@ -224,14 +224,20 @@ pub struct Ruskery {
 impl Ruskery {
     /// Boot the real binary against the given S3 stub and wait until healthy.
     pub async fn spawn(stub: &str) -> Ruskery {
+        Self::spawn_with(stub, &[]).await
+    }
+
+    /// Like [`Ruskery::spawn`] but with extra `RUSKERY_*` environment overrides,
+    /// for exercising config-driven behaviour (e.g. quotas / size limits).
+    pub async fn spawn_with(stub: &str, extra_env: &[(&str, &str)]) -> Ruskery {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("ruskery.db").to_string_lossy().to_string();
         let cfg = tmp.path().join("none.toml").to_string_lossy().to_string();
         let port = free_port();
         let base = format!("http://127.0.0.1:{port}");
 
-        let child = Command::new(env!("CARGO_BIN_EXE_ruskery"))
-            .args(["--config", &cfg, "serve"])
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ruskery"));
+        cmd.args(["--config", &cfg, "serve"])
             .env("RUST_LOG", "error")
             .env("RUSKERY_DATABASE__PATH", &db_path)
             .env("RUSKERY_SERVER__HTTP_ADDR", format!("127.0.0.1:{port}"))
@@ -245,9 +251,11 @@ impl Ruskery {
             .env("RUSKERY_STORAGE__ACCESS_KEY_ID", "test")
             .env("RUSKERY_STORAGE__SECRET_ACCESS_KEY", "test")
             .env("RUSKERY_STORAGE__FORCE_PATH_STYLE", "true")
-            .env("RUSKERY_GC__GRACE_SECS", "0")
-            .spawn()
-            .expect("failed to spawn ruskery binary");
+            .env("RUSKERY_GC__GRACE_SECS", "0");
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().expect("failed to spawn ruskery binary");
 
         let r = Ruskery {
             child,
@@ -357,6 +365,41 @@ pub async fn push_blob(
         .unwrap();
     assert_eq!(put.status(), 201, "blob finalize failed");
     digest
+}
+
+/// Attempt a monolithic blob push and return the finalize status without
+/// asserting success — for exercising rejection paths (quota, size limits).
+pub async fn try_push_blob(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    repo: &str,
+    content: &[u8],
+) -> reqwest::StatusCode {
+    let digest = sha256_digest(content);
+    let start = client
+        .post(format!("{base}/v2/{repo}/blobs/uploads/"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 202, "upload start failed");
+    let upload = start
+        .headers()
+        .get("docker-upload-uuid")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let put = client
+        .put(format!("{base}/v2/{repo}/blobs/uploads/{upload}"))
+        .query(&[("digest", &digest)])
+        .bearer_auth(token)
+        .body(content.to_vec())
+        .send()
+        .await
+        .unwrap();
+    put.status()
 }
 
 /// Push a blob via the chunked flow: POST start, one PATCH per chunk, then a

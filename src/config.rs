@@ -35,6 +35,23 @@ pub struct Config {
     /// In-memory manifest read cache settings.
     #[serde(default)]
     pub cache: CacheConfig,
+    /// Storage quota / upload-size limits.
+    #[serde(default)]
+    pub quota: QuotaConfig,
+}
+
+/// Storage quota / upload-size limits. Both default to `0` (unlimited) — quotas
+/// are opt-in per deployment.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct QuotaConfig {
+    /// Default per-org storage cap in bytes (deduplicated total of an org's blob
+    /// sizes). `0` = unlimited. A per-org override in the database
+    /// (`orgs.storage_quota_bytes`) takes precedence over this default.
+    pub default_storage_bytes: u64,
+    /// Maximum size in bytes of a single uploaded blob. `0` = unlimited.
+    /// Enforced while the upload streams, so an over-size blob is rejected
+    /// without being fully written to object storage.
+    pub max_blob_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +262,7 @@ impl Default for Config {
             gc: GcConfig::default(),
             analytics: AnalyticsConfig::default(),
             cache: CacheConfig::default(),
+            quota: QuotaConfig::default(),
         }
     }
 }

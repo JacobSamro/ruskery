@@ -88,6 +88,15 @@ enum AdminCommand {
         #[arg(long, default_value = "member")]
         role: String,
     },
+    /// Set or clear an org's storage quota (bytes; 0 = unlimited).
+    SetQuota {
+        #[arg(long)]
+        org: String,
+        /// Quota in bytes (0 = unlimited for this org). Omit to clear the
+        /// override and fall back to the instance default.
+        #[arg(long)]
+        bytes: Option<i64>,
+    },
     /// Create a personal access token for a user (printed once).
     CreateToken {
         #[arg(long)]
@@ -205,6 +214,25 @@ async fn run_admin(pool: &db::Db, cmd: AdminCommand) -> anyhow::Result<()> {
                 org.slug,
                 role.as_str()
             );
+        }
+        AdminCommand::SetQuota { org, bytes } => {
+            if let Some(b) = bytes {
+                if b < 0 {
+                    return Err(anyhow::anyhow!("--bytes must be >= 0"));
+                }
+            }
+            let org = db::orgs::find_org_by_slug(pool, &org)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("org not found"))?;
+            db::orgs::set_org_quota(pool, &org.id, bytes).await?;
+            match bytes {
+                Some(0) => println!("{} storage quota: unlimited", org.slug),
+                Some(b) => println!("{} storage quota: {b} bytes", org.slug),
+                None => println!(
+                    "{} storage quota override cleared (using default)",
+                    org.slug
+                ),
+            }
         }
         AdminCommand::CreateToken {
             username,

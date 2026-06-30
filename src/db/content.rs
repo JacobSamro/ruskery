@@ -26,6 +26,17 @@ pub async fn blob_size(db: &Db, org_id: &str, digest: &str) -> Result<Option<i64
     Ok(row.map(|r| r.0))
 }
 
+/// Total deduplicated bytes an org has stored: the sum of its blob sizes. A
+/// blob is recorded once per org regardless of how many repos reference it, so
+/// this is the org's real storage footprint — what a storage quota bounds.
+pub async fn org_storage_used(db: &Db, org_id: &str) -> Result<i64> {
+    let row: (i64,) = sqlx::query_as("SELECT COALESCE(SUM(size), 0) FROM blobs WHERE org_id = ?")
+        .bind(org_id)
+        .fetch_one(db)
+        .await?;
+    Ok(row.0)
+}
+
 pub async fn record_blob(db: &Db, org_id: &str, digest: &str, size: i64) -> Result<()> {
     sqlx::query(
         "INSERT INTO blobs (org_id, digest, size, created_at) VALUES (?, ?, ?, ?)

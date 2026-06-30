@@ -1839,3 +1839,87 @@ async fn multi_arch_lifecycle() {
         );
     }
 }
+
+/// Quota enforcement: a single-blob size cap and a per-org storage cap, both
+/// configured via env. Verifies an over-size blob is rejected with `413`, that
+/// pushes are allowed up to the org cap, and that the push which would exceed it
+/// is rejected with `403`.
+#[tokio::test]
+async fn quota_enforcement() {
+    let stub = spawn_s3_stub().await;
+    // 1 KiB max per blob; 4 KiB total per org.
+    let rk = Ruskery::spawn_with(
+        &stub,
+        &[
+            ("RUSKERY_QUOTA__MAX_BLOB_BYTES", "1024"),
+            ("RUSKERY_QUOTA__DEFAULT_STORAGE_BYTES", "4096"),
+        ],
+    )
+    .await;
+    let base = rk.base.clone();
+
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let reg = reqwest::Client::new();
+
+    // First-run setup + a registry token.
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+    let tok: serde_json::Value = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "ci" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pat = tok["token"].as_str().unwrap().to_string();
+    let jwt = registry_token(&reg, &base, "admin", &pat, "repository:acme/app:pull,push").await;
+
+    // A blob over the 1 KiB single-blob limit is rejected (413), before it is
+    // committed — so it doesn't consume the org's storage budget.
+    let too_big = vec![0xAAu8; 2048];
+    assert_eq!(
+        try_push_blob(&reg, &base, &jwt, "acme/app", &too_big).await,
+        413,
+        "over-size blob must be rejected"
+    );
+
+    // Exactly 1 KiB is allowed. Fill the 4 KiB org cap with four distinct blobs.
+    for i in 0u8..4 {
+        let blob = vec![i + 1; 1024];
+        assert_eq!(
+            try_push_blob(&reg, &base, &jwt, "acme/app", &blob).await,
+            201,
+            "blob {i} within quota must succeed"
+        );
+    }
+
+    // The org is now at 4 KiB used; the next distinct blob would exceed the cap.
+    let over = vec![0xEEu8; 1024];
+    assert_eq!(
+        try_push_blob(&reg, &base, &jwt, "acme/app", &over).await,
+        403,
+        "push over the storage quota must be denied"
+    );
+
+    // A re-push of an already-stored blob consumes nothing, so it still succeeds
+    // even though the org is at its cap (content-addressed dedup).
+    let dup = vec![1u8; 1024]; // same content as the first accepted blob
+    assert_eq!(
+        try_push_blob(&reg, &base, &jwt, "acme/app", &dup).await,
+        201,
+        "re-push of an existing blob must not be quota-blocked"
+    );
+}

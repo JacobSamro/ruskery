@@ -60,6 +60,29 @@ pub async fn create_org(db: &Db, slug: &str, name: &str) -> Result<Org> {
     })
 }
 
+/// An org's storage-quota override in bytes, if one is set. `None` means the
+/// org has no override and the instance default ([quota] default_storage_bytes)
+/// applies; `Some(0)` means explicitly unlimited for this org.
+pub async fn org_quota_bytes(db: &Db, org_id: &str) -> Result<Option<i64>> {
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT storage_quota_bytes FROM orgs WHERE id = ?")
+            .bind(org_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.and_then(|r| r.0))
+}
+
+/// Set (`Some`) or clear (`None`, falling back to the instance default) an org's
+/// storage-quota override.
+pub async fn set_org_quota(db: &Db, org_id: &str, bytes: Option<i64>) -> Result<()> {
+    sqlx::query("UPDATE orgs SET storage_quota_bytes = ? WHERE id = ?")
+        .bind(bytes)
+        .bind(org_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn add_org_member(db: &Db, org_id: &str, user_id: &str, role: OrgRole) -> Result<()> {
     sqlx::query(
         "INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, ?)

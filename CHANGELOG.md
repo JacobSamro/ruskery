@@ -8,6 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Storage quotas & upload-size limits.** A per-org storage cap and a
+  single-blob size cap, both opt-in. `[quota] max_blob_bytes` rejects an
+  over-size blob *while it streams* (`413`), so it's never fully written to
+  object storage; `[quota] default_storage_bytes` caps an org's deduplicated
+  footprint, with a per-org override (`ruskery admin set-quota --org <slug>
+  --bytes <n>`; `0` = unlimited, omit to clear). A push that would exceed the
+  cap is rejected with `403 DENIED` *before* the blob is committed; a re-push of
+  an already-stored blob consumes nothing and is never blocked (content-addressed
+  dedup). The org analytics API now reports live usage against the limits.
+  Enforcement is best-effort under concurrent uploads (two can race and slightly
+  overshoot). Unlimited by default — existing installs are unaffected.
+
 - **Manifest read cache (pull hot path).** A bounded in-memory LRU now fronts
   the SQLite manifest read: repeated pulls of the same tag/digest serve the
   manifest bytes (and the tag→digest resolution) straight from memory instead of
@@ -19,6 +31,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entries each).
 
 ### Fixed
+
+- **Concurrent finalize of the same upload could corrupt a blob.** Two
+  finalize requests (`PUT .../uploads/<uuid>?digest=`) racing on one upload
+  session could let the second run on the already-drained session and re-commit
+  an empty/partial object over the just-written content-addressed blob. A
+  finalize now claims the session (a `finalizing` flag set under its lock) and a
+  second concurrent or retried finalize — and any late `PATCH` — is refused.
 
 - **OCI conformance suite failed under rate limiting.** The registry token
   endpoint (`/v2/token`) shared the strict per-IP auth limiter (10/s, burst 20)

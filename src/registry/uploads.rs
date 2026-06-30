@@ -60,6 +60,11 @@ pub struct UploadSession {
     pub parts: Vec<CompletedPart>,
     pub next_part: i32,
     pub total: u64,
+    /// Set once a finalize (`PUT ...?digest=`) has begun for this session. A
+    /// finalize consumes the buffered parts, so a second concurrent or retried
+    /// finalize must be refused — otherwise it would re-commit an empty/partial
+    /// object over the already-finished, content-addressed blob.
+    pub finalizing: bool,
     /// The storage client bound at creation — used for every operation on this
     /// upload so a mid-flight settings hot-swap can't split a multipart upload
     /// across two different endpoints/buckets.
@@ -90,6 +95,24 @@ fn unknown_upload() -> Error {
         StatusCode::NOT_FOUND,
         "BLOB_UPLOAD_UNKNOWN",
         "unknown upload",
+    )
+}
+
+/// `413` for an upload that exceeds the configured single-blob size limit.
+fn blob_too_large(max: u64) -> Error {
+    Error::oci(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "SIZE_INVALID",
+        format!("blob exceeds the maximum allowed size of {max} bytes"),
+    )
+}
+
+/// `403` for an upload that would push an org over its storage quota.
+fn quota_exceeded() -> Error {
+    Error::oci(
+        StatusCode::FORBIDDEN,
+        "DENIED",
+        "organization storage quota exceeded",
     )
 }
 
@@ -139,6 +162,7 @@ pub async fn start(
             parts: Vec::new(),
             next_part: 1,
             total: 0,
+            finalizing: false,
             storage,
         },
     );
@@ -159,6 +183,11 @@ pub async fn patch(
 ) -> Result<Response> {
     let session = locked_session(state, upload_id, org_id).await?;
     let mut s = session.lock().await;
+    // Refuse to append to a session that is already being finalized.
+    if s.finalizing {
+        drop(s);
+        return Err(unknown_upload());
+    }
 
     if let Some(cr) = content_range {
         let start = cr
@@ -187,10 +216,20 @@ pub async fn patch(
         }
     }
 
+    let max_blob = state.config().quota.max_blob_bytes;
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::bad_request(format!("body read: {e}")))?;
         s.write(&chunk).await?;
+        // Reject an over-size blob mid-stream so we abandon the partial upload
+        // instead of writing the whole thing to object storage first.
+        if max_blob > 0 && s.total > max_blob {
+            let storage = s.storage.clone();
+            let _ = storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+            drop(s);
+            state.uploads().remove(upload_id);
+            return Err(blob_too_large(max_blob));
+        }
     }
 
     let total = s.total;
@@ -210,13 +249,29 @@ pub async fn finish(
 ) -> Result<Response> {
     let session = locked_session(state, upload_id, org_id).await?;
     let mut s = session.lock().await;
+    // Claim the finalize. The session lock is held for the whole of `finish`, so
+    // a second concurrent finalize only proceeds once this one has dropped the
+    // lock — by then `finalizing` is set and it is refused, instead of running
+    // on the drained session and overwriting the committed blob with empty bytes.
+    if s.finalizing {
+        drop(s);
+        return Err(unknown_upload());
+    }
+    s.finalizing = true;
     let storage = s.storage.clone();
 
     // Absorb any bytes sent with the final PUT.
+    let max_blob = state.config().quota.max_blob_bytes;
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::bad_request(format!("body read: {e}")))?;
         s.write(&chunk).await?;
+        if max_blob > 0 && s.total > max_blob {
+            let _ = storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+            drop(s);
+            state.uploads().remove(upload_id);
+            return Err(blob_too_large(max_blob));
+        }
     }
 
     let computed = format!("sha256:{}", hex::encode(s.hasher.clone().finalize()));
@@ -228,6 +283,31 @@ pub async fn finish(
             "DIGEST_INVALID",
             format!("digest mismatch: got {computed}, expected {expected_digest}"),
         ));
+    }
+
+    // Storage quota: only a genuinely new blob consumes space (content-addressed
+    // dedup means a re-push of an existing digest adds nothing), so a re-push
+    // can't be blocked by a full quota. Enforce before committing the object so
+    // we never persist a blob that breaches the limit. Best-effort under
+    // concurrency: two simultaneous uploads can both pass and slightly overshoot.
+    if !db::content::blob_exists(state.db(), &s.org_id, &computed).await? {
+        // Effective quota: the org override, else the instance default. 0 = unlimited.
+        let effective: u64 = match db::orgs::org_quota_bytes(state.db(), &s.org_id).await? {
+            Some(bytes) => bytes.max(0) as u64,
+            None => state.config().quota.default_storage_bytes,
+        };
+        if effective > 0 {
+            let used = db::content::org_storage_used(state.db(), &s.org_id).await?;
+            // Compare in u64 space so a (theoretical) >i64::MAX blob can't wrap
+            // and slip under the cap; `used` is a SUM of sizes, so it's >= 0.
+            let projected = (used.max(0) as u64).saturating_add(s.total);
+            if projected > effective {
+                let _ = storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+                drop(s);
+                state.uploads().remove(upload_id);
+                return Err(quota_exceeded());
+            }
+        }
     }
 
     // Commit the temp object: tiny/empty uploads (no flushed parts) go via a

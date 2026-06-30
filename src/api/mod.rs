@@ -518,6 +518,7 @@ async fn org_analytics(
         .clamp(1, 365);
     let since = crate::util::utc_day_offset(days);
     let db = state.db();
+    let cfg = &state.config().quota;
     Ok(json_ok(json!({
         "range_days": days,
         "overview": db::analytics::overview(db, &org.id, &since).await?,
@@ -525,6 +526,14 @@ async fn org_analytics(
         "storage": db::analytics::storage_series(db, &org.id, &since).await?,
         "top_repos": db::analytics::top_repos(db, &org.id, &since, 10).await?,
         "top_users": db::analytics::top_users(db, &org.id, &since, 10).await?,
+        "quota": {
+            // Live deduplicated usage plus the limits in force: the org's
+            // override (null → instance default) and the single-blob cap.
+            "storage_used_bytes": db::content::org_storage_used(db, &org.id).await?,
+            "storage_quota_override_bytes": db::orgs::org_quota_bytes(db, &org.id).await?,
+            "default_storage_bytes": cfg.default_storage_bytes,
+            "max_blob_bytes": cfg.max_blob_bytes,
+        },
     })))
 }
 
