@@ -2,6 +2,7 @@
 const route = useRoute();
 const api = useApi();
 const me = useMe();
+const { confirm } = useConfirm();
 
 const slug = computed(() => route.params.slug as string);
 const name = computed(() => {
@@ -37,7 +38,15 @@ function copy(tag: string) {
 
 const router = useRouter();
 async function remove() {
-  if (!confirm(`Delete repository "${name.value}" and all its tags?`)) return;
+  if (
+    !(await confirm({
+      title: "Delete repository",
+      message: `Delete repository "${name.value}" and all its tags? This cannot be undone.`,
+      confirmText: "Delete",
+      destructive: true,
+    }))
+  )
+    return;
   await api.del(`/api/v1/orgs/${slug.value}/repos/${name.value}`);
   router.push(`/orgs/${slug.value}`);
 }

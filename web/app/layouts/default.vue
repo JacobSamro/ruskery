@@ -1,4 +1,12 @@
 <script setup lang="ts">
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 const me = useMe();
 const route = useRoute();
 const router = useRouter();
@@ -23,13 +31,21 @@ const nav = computed(() => {
   ];
 });
 
-function switchOrg(e: Event) {
-  const slug = (e.target as HTMLSelectElement).value;
-  router.push(`/orgs/${slug}`);
+function switchOrg(slug: unknown) {
+  if (slug) router.push(`/orgs/${String(slug)}`);
 }
 
+const { confirm } = useConfirm();
+
 async function logout() {
-  if (!confirm("Sign out of ruskery?")) return;
+  if (
+    !(await confirm({
+      title: "Sign out",
+      message: "Sign out of ruskery?",
+      confirmText: "Sign out",
+    }))
+  )
+    return;
   await api.post("/api/v1/auth/logout").catch(() => {});
   me.value = null;
   await router.push("/login");
@@ -54,14 +70,16 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
         <span class="text-lg font-semibold tracking-tight">ruskery</span>
       </NuxtLink>
 
-      <select
+      <Select
         v-if="me && me.orgs.length"
-        class="mb-4 h-9 w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
-        :value="currentSlug"
-        @change="switchOrg"
+        :model-value="currentSlug"
+        @update:model-value="switchOrg"
       >
-        <option v-for="o in me.orgs" :key="o.slug" :value="o.slug">{{ o.name }}</option>
-      </select>
+        <SelectTrigger class="mb-4 w-full"><SelectValue placeholder="Select org" /></SelectTrigger>
+        <SelectContent>
+          <SelectItem v-for="o in me.orgs" :key="o.slug" :value="o.slug">{{ o.name }}</SelectItem>
+        </SelectContent>
+      </Select>
 
       <nav class="flex flex-1 flex-col gap-1">
         <NuxtLink

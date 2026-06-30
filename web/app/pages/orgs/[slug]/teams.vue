@@ -1,4 +1,12 @@
 <script setup lang="ts">
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 const route = useRoute();
 const api = useApi();
 const me = useMe();
@@ -140,11 +148,14 @@ async function setPerm() {
           <template #header>
             <div v-if="canAdmin" class="flex gap-2">
               <UiInput v-model="permRepo" placeholder="repo name" class="h-8 w-32" />
-              <select v-model="permLevel" class="h-8 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-xs">
-                <option value="pull">pull</option>
-                <option value="push">push</option>
-                <option value="admin">admin</option>
-              </select>
+              <Select v-model="permLevel">
+                <SelectTrigger class="h-8 w-24"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="pull">pull</SelectItem>
+                  <SelectItem value="push">push</SelectItem>
+                  <SelectItem value="admin">admin</SelectItem>
+                </SelectContent>
+              </Select>
               <UiButton size="sm" @click="setPerm">Grant</UiButton>
             </div>
           </template>

@@ -1,7 +1,16 @@
 <script setup lang="ts">
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 const route = useRoute();
 const api = useApi();
 const me = useMe();
+const { confirm } = useConfirm();
 const slug = computed(() => route.params.slug as string);
 
 const members = ref<Member[]>([]);
@@ -39,13 +48,21 @@ async function add() {
   }
 }
 
-async function setRole(m: Member, role: string) {
-  await api.post(`/api/v1/orgs/${slug.value}/members/${m.user_id}`, { role });
+async function setRole(m: Member, role: unknown) {
+  await api.post(`/api/v1/orgs/${slug.value}/members/${m.user_id}`, { role: String(role) });
   await load();
 }
 
 async function remove(m: Member) {
-  if (!confirm(`Remove ${m.username} from this organization?`)) return;
+  if (
+    !(await confirm({
+      title: "Remove member",
+      message: `Remove ${m.username} from this organization?`,
+      confirmText: "Remove",
+      destructive: true,
+    }))
+  )
+    return;
   await api.del(`/api/v1/orgs/${slug.value}/members/${m.user_id}`);
   await load();
 }
@@ -79,16 +96,18 @@ async function remove(m: Member) {
             <td class="px-3 py-3 font-medium">{{ m.username }}</td>
             <td class="px-3 py-3 text-[var(--color-muted)]">{{ m.email }}</td>
             <td class="px-3 py-3">
-              <select
+              <Select
                 v-if="canAdmin"
-                class="h-8 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-xs"
-                :value="m.role"
-                @change="setRole(m, ($event.target as HTMLSelectElement).value)"
+                :model-value="m.role"
+                @update:model-value="(v) => setRole(m, v)"
               >
-                <option value="member">member</option>
-                <option value="admin">admin</option>
-                <option value="owner">owner</option>
-              </select>
+                <SelectTrigger class="h-8 w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="member">member</SelectItem>
+                  <SelectItem value="admin">admin</SelectItem>
+                  <SelectItem value="owner">owner</SelectItem>
+                </SelectContent>
+              </Select>
               <UiBadge v-else>{{ m.role }}</UiBadge>
             </td>
             <td class="px-3 py-3 text-right">
@@ -109,14 +128,14 @@ async function remove(m: Member) {
         </div>
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Role</label>
-          <select
-            v-model="addRole"
-            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
-          >
-            <option value="member">member</option>
-            <option value="admin">admin</option>
-            <option value="owner">owner</option>
-          </select>
+          <Select v-model="addRole">
+            <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="member">member</SelectItem>
+              <SelectItem value="admin">admin</SelectItem>
+              <SelectItem value="owner">owner</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <p v-if="error" class="text-sm text-red-400">{{ error }}</p>
         <div class="flex justify-end gap-2">

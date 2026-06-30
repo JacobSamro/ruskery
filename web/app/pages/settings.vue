@@ -5,6 +5,7 @@
 const api = useApi();
 const me = useMe();
 const router = useRouter();
+const { confirm } = useConfirm();
 
 // Instance-admin user management.
 const users = ref<User[]>([]);
@@ -158,7 +159,15 @@ async function addDomain() {
   }
 }
 async function removeDomain(d: string) {
-  if (!confirm(`Remove ${d}?`)) return;
+  if (
+    !(await confirm({
+      title: "Remove domain",
+      message: `Remove ${d}? Its certificate will stop being served.`,
+      confirmText: "Remove",
+      destructive: true,
+    }))
+  )
+    return;
   await api.del(`/api/v1/domains/${d}`);
   await loadDomains();
 }

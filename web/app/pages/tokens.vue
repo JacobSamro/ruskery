@@ -1,6 +1,15 @@
 <script setup lang="ts">
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 const api = useApi();
 const me = useMe();
+const { confirm } = useConfirm();
 
 const tokens = ref<Token[]>([]);
 const loading = ref(true);
@@ -58,7 +67,15 @@ async function create() {
 }
 
 async function remove(t: Token) {
-  if (!confirm(`Revoke token "${t.name}"?`)) return;
+  if (
+    !(await confirm({
+      title: "Revoke token",
+      message: `Revoke token "${t.name}"? Any client using it will stop working.`,
+      confirmText: "Revoke",
+      destructive: true,
+    }))
+  )
+    return;
   await api.del(`/api/v1/tokens/${t.id}`);
   await load();
 }
@@ -151,48 +168,47 @@ function closeCreate() {
 
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Scope</label>
-          <select
-            v-model="scopeType"
-            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
-          >
-            <option value="all">All my access</option>
-            <option value="org">A single organization</option>
-            <option value="repo">A single repository</option>
-          </select>
+          <Select v-model="scopeType">
+            <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All my access</SelectItem>
+              <SelectItem value="org">A single organization</SelectItem>
+              <SelectItem value="repo">A single repository</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Permission</label>
-          <select
-            v-model="scopePerm"
-            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
-          >
-            <option value="admin">Full (read, write, delete)</option>
-            <option value="push">Read &amp; write (pull + push)</option>
-            <option value="pull">Read-only (pull)</option>
-          </select>
+          <Select v-model="scopePerm">
+            <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="admin">Full (read, write, delete)</SelectItem>
+              <SelectItem value="push">Read &amp; write (pull + push)</SelectItem>
+              <SelectItem value="pull">Read-only (pull)</SelectItem>
+            </SelectContent>
+          </Select>
           <p class="text-xs text-[var(--color-muted)]">Caps the token below your own access; never grants more.</p>
         </div>
 
         <div v-if="scopeType !== 'all'" class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Organization</label>
-          <select
-            v-model="scopeOrg"
-            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
-          >
-            <option v-for="o in orgs" :key="o.slug" :value="o.slug">{{ o.name }}</option>
-          </select>
+          <Select v-model="scopeOrg">
+            <SelectTrigger class="w-full"><SelectValue placeholder="Select an organization…" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="o in orgs" :key="o.slug" :value="o.slug">{{ o.name }}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div v-if="scopeType === 'repo'" class="flex flex-col gap-1.5">
           <label class="text-sm font-medium">Repository</label>
-          <select
-            v-model="scopeRepo"
-            class="h-9 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 text-sm"
-          >
-            <option value="" disabled>Select a repository…</option>
-            <option v-for="r in repos" :key="r.name" :value="r.name">{{ r.name }}</option>
-          </select>
+          <Select v-model="scopeRepo">
+            <SelectTrigger class="w-full"><SelectValue placeholder="Select a repository…" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="r in repos" :key="r.name" :value="r.name">{{ r.name }}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div class="flex justify-end gap-2">

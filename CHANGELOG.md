@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Dashboard now uses shadcn-vue components.** All native `<select>` dropdowns
+  were replaced with the shadcn-vue `Select` (org switcher, token scope/permission/
+  org/repo, member role, team permission), and every `window.confirm` with a
+  shadcn-vue `AlertDialog` via a reusable `useConfirm()` composable (sign out,
+  revoke token, remove member, remove domain, delete repository). Added through
+  the official `shadcn-vue` CLI; fonts are bundled (no external Google Fonts
+  request) to keep the binary self-contained.
+
 - **Instance settings split out of the org settings page.** Storage, Domains &
   TLS, Google sign-in, and Users are instance-wide (not per-org), so they now
   live on a dedicated admin-only **Instance Settings** page (`/settings`) reached
