@@ -25,12 +25,12 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       AWS_EC2_METADATA_DISABLED: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # macOS runners have no Docker daemon — provision one (Colima, Linux engine).
       - name: Set up Docker (macOS)
         if: runner.os == 'macOS'
-        uses: docker/setup-docker-action@v4
+        uses: docker/setup-docker-action@v5
 
       # On Linux the native daemon must resolve the presigned-URL host.
       - name: Map host.docker.internal (Linux)
@@ -106,7 +106,7 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       AWS_EC2_METADATA_DISABLED: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
