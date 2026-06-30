@@ -1,0 +1,160 @@
+name: docker e2e (Linux/macOS/Windows)
+
+# Real `docker login` + push + pull against a running ruskery, on all three
+# desktop OSes. Heavy (builds the binary + pulls base images), so it runs on
+# demand and on release tags rather than every push — the fast in-process e2e
+# in ci.yml covers ordinary commits.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ── Linux + macOS: ruskery & MinIO as containers, push from the host CLI ──
+  compose:
+    name: docker push/pull (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      AWS_ACCESS_KEY_ID: ruskery
+      AWS_SECRET_ACCESS_KEY: ruskerysecret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      # macOS runners have no Docker daemon — provision one (Colima, Linux engine).
+      - name: Set up Docker (macOS)
+        if: runner.os == 'macOS'
+        uses: docker/setup-docker-action@v4
+
+      # On Linux the native daemon must resolve the presigned-URL host.
+      - name: Map host.docker.internal (Linux)
+        if: runner.os == 'Linux'
+        run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
+
+      - name: Build & start ruskery + MinIO
+        run: docker compose -f docker-compose.e2e.yml up -d --build
+
+      - name: Create the storage bucket
+        run: |
+          for i in $(seq 1 30); do
+            if aws --endpoint-url http://localhost:9000 s3 mb s3://ruskery 2>/dev/null; then
+              echo "bucket created"; break
+            fi
+            echo "waiting for minio..."; sleep 2
+          done
+
+      - name: Wait for ruskery
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:5000/healthz >/dev/null 2>&1; then
+              echo "ruskery is up"; break
+            fi
+            sleep 2
+          done
+          curl -fsS http://localhost:5000/healthz
+
+      - name: Bootstrap org, user & token
+        id: boot
+        run: |
+          exec_ruskery() { docker compose -f docker-compose.e2e.yml exec -T ruskery /usr/local/bin/ruskery -c /nonexistent "$@"; }
+          exec_ruskery admin create-user --email admin@example.com --username admin --password supersecret123
+          exec_ruskery admin create-org --slug acme --name "Acme Inc"
+          exec_ruskery admin add-member --org acme --username admin --role owner
+          TOKEN=$(exec_ruskery admin create-token --username admin --name ci | tr -d '\r\n ')
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: docker login / push / pull round-trip
+        env:
+          REGISTRY: localhost:5000
+          RUSER: admin
+          TOKEN: ${{ steps.boot.outputs.token }}
+          SRC: busybox:latest
+          DEST: acme/busybox:ci
+        run: bash tests/docker/push_pull.sh
+
+      - name: Dump server logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.e2e.yml logs --no-color || true
+
+  # ── Windows: native ruskery.exe + native MinIO + a Windows container image ──
+  windows:
+    name: docker push/pull (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Job-level env is inherited by every step AND by processes they spawn, so
+    # the background `serve` and the foreground `admin` commands share one DB.
+    env:
+      RUSKERY_DATABASE__PATH: ruskery.db
+      RUSKERY_SERVER__HTTP_ADDR: "0.0.0.0:5000"
+      RUSKERY_SERVER__PUBLIC_URL: "http://localhost:5000"
+      RUSKERY_STORAGE__ENDPOINT: "http://127.0.0.1:9000"
+      RUSKERY_STORAGE__BUCKET: ruskery
+      RUSKERY_STORAGE__REGION: us-east-1
+      RUSKERY_STORAGE__ACCESS_KEY_ID: ruskery
+      RUSKERY_STORAGE__SECRET_ACCESS_KEY: ruskerysecret
+      RUSKERY_STORAGE__FORCE_PATH_STYLE: "true"
+      MINIO_ROOT_USER: ruskery
+      MINIO_ROOT_PASSWORD: ruskerysecret
+      AWS_ACCESS_KEY_ID: ruskery
+      AWS_SECRET_ACCESS_KEY: ruskerysecret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Build web UI
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun run generate
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build ruskery.exe
+        run: cargo build --release --locked
+
+      - name: Start MinIO (native) + create bucket
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dl.min.io/server/minio/release/windows-amd64/minio.exe -OutFile minio.exe
+          New-Item -ItemType Directory -Force -Path data | Out-Null
+          Start-Process -FilePath .\minio.exe -ArgumentList 'server','data','--address',':9000' -PassThru | Out-Null
+          for ($i=0; $i -lt 30; $i++) {
+            try { aws --endpoint-url http://localhost:9000 s3 mb s3://ruskery; break } catch { Start-Sleep 2 }
+          }
+
+      - name: Start ruskery.exe
+        shell: pwsh
+        run: |
+          Start-Process -FilePath .\target\release\ruskery.exe -ArgumentList '-c','noconfig.toml','serve' -PassThru | Out-Null
+          for ($i=0; $i -lt 60; $i++) {
+            try { if ((Invoke-WebRequest -UseBasicParsing http://localhost:5000/healthz -TimeoutSec 3).StatusCode -eq 200) { break } } catch { Start-Sleep 2 }
+          }
+          (Invoke-WebRequest -UseBasicParsing http://localhost:5000/healthz).StatusCode
+
+      - name: Bootstrap & docker push/pull (Windows image)
+        shell: pwsh
+        run: |
+          $bin = ".\target\release\ruskery.exe"
+          & $bin -c noconfig.toml admin create-user --email admin@example.com --username admin --password supersecret123
+          & $bin -c noconfig.toml admin create-org --slug acme --name "Acme Inc"
+          & $bin -c noconfig.toml admin add-member --org acme --username admin --role owner
+          $token = (& $bin -c noconfig.toml admin create-token --username admin --name ci).Trim()
+
+          $token | docker login localhost:5000 -u admin --password-stdin
+          docker pull mcr.microsoft.com/windows/nanoserver:ltsc2022
+          docker tag mcr.microsoft.com/windows/nanoserver:ltsc2022 localhost:5000/acme/nanoserver:ci
+          docker push localhost:5000/acme/nanoserver:ci
+          docker rmi localhost:5000/acme/nanoserver:ci
+          docker pull localhost:5000/acme/nanoserver:ci
+          Write-Host "OK: Windows docker push/pull round-trip succeeded"

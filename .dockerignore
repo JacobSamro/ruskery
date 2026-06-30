@@ -1,0 +1,10 @@
+/target
+**/target
+web/node_modules
+web/.nuxt
+web/.output
+.git
+*.db
+*.db-shm
+*.db-wal
+logs

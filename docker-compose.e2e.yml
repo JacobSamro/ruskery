@@ -1,0 +1,33 @@
+# Server side for the cross-platform `docker push/pull` e2e (Linux + macOS).
+# ruskery + MinIO run as containers; the host docker CLI logs in and pushes to
+# the published ruskery port. The storage endpoint is `host.docker.internal` so
+# the presigned pull URL that ruskery hands back is reachable by the docker
+# daemon (on Linux the runner adds host.docker.internal -> 127.0.0.1 to /etc/hosts).
+services:
+  minio:
+    image: minio/minio
+    command: server /data --address :9000
+    ports:
+      - "9000:9000"
+    environment:
+      MINIO_ROOT_USER: ruskery
+      MINIO_ROOT_PASSWORD: ruskerysecret
+
+  ruskery:
+    build: .
+    depends_on:
+      - minio
+    ports:
+      - "5000:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      RUSKERY_SERVER__HTTP_ADDR: "0.0.0.0:80"
+      RUSKERY_SERVER__PUBLIC_URL: "http://localhost:5000"
+      RUSKERY_DATABASE__PATH: "/var/lib/ruskery/ruskery.db"
+      RUSKERY_STORAGE__ENDPOINT: "http://host.docker.internal:9000"
+      RUSKERY_STORAGE__BUCKET: "ruskery"
+      RUSKERY_STORAGE__REGION: "us-east-1"
+      RUSKERY_STORAGE__ACCESS_KEY_ID: "ruskery"
+      RUSKERY_STORAGE__SECRET_ACCESS_KEY: "ruskerysecret"
+      RUSKERY_STORAGE__FORCE_PATH_STYLE: "true"
