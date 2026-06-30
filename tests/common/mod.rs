@@ -355,6 +355,55 @@ pub async fn push_blob(
     digest
 }
 
+/// Push a blob via the chunked flow: POST start, one PATCH per chunk, then a
+/// PUT finalize with no body. Returns the digest of the concatenation.
+pub async fn push_blob_chunked(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    repo: &str,
+    chunks: &[&[u8]],
+) -> String {
+    let mut all = Vec::new();
+    for c in chunks {
+        all.extend_from_slice(c);
+    }
+    let digest = sha256_digest(&all);
+    let start = client
+        .post(format!("{base}/v2/{repo}/blobs/uploads/"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 202, "chunked upload start");
+    let upload = start
+        .headers()
+        .get("docker-upload-uuid")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    for c in chunks {
+        let r = client
+            .patch(format!("{base}/v2/{repo}/blobs/uploads/{upload}"))
+            .bearer_auth(token)
+            .body(c.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202, "patch chunk");
+    }
+    let put = client
+        .put(format!("{base}/v2/{repo}/blobs/uploads/{upload}"))
+        .query(&[("digest", &digest)])
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 201, "chunked finalize");
+    digest
+}
+
 /// Build + push a minimal image manifest (config + one layer); returns digest.
 #[allow(clippy::too_many_arguments)]
 pub async fn push_manifest(
