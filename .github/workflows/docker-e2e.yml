@@ -1,25 +1,31 @@
-name: docker e2e (Linux/Windows)
+name: docker e2e (Linux/macOS/Windows)
 
-# Real `docker login` + push + pull against a running ruskery. Heavy (builds the
-# binary + pulls base images), so it runs on demand and on release tags rather
-# than every push — the fast in-process e2e in ci.yml covers ordinary commits.
+# Real `docker login` + push + pull against a running ruskery, on all three
+# desktop OSes. Heavy (builds the binary + pulls base images), so it runs on
+# demand and on release tags rather than every push — the fast in-process e2e
+# in ci.yml covers ordinary commits.
 #
-# macOS is intentionally absent: GitHub's hosted macOS runners are Apple-silicon
-# VMs, and Apple's Hypervisor.framework forbids nested virtualization, so QEMU
-# aborts with HV_UNSUPPORTED and no Linux Docker daemon can start there (Colima/
-# Lima cannot boot). The docker CLI behaviour is host-OS-independent anyway —
-# what we exercise is the registry, which Linux + Windows already cover.
+# macOS note: the leg runs on an *Intel* runner (macos-15-intel). GitHub's
+# Apple-silicon runners (macos-26/macos-15 arm64) are themselves VMs and Apple's
+# Hypervisor.framework forbids nested virtualization, so QEMU aborts with
+# HV_UNSUPPORTED and no Linux Docker daemon can start. Intel runners support
+# QEMU/Colima, which douglascamata/setup-docker-macos-action provisions.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
 jobs:
-  # ── Linux: ruskery & MinIO as containers, push from the host docker CLI ──
+  # ── Linux + macOS(Intel): ruskery & MinIO as containers, push from host CLI ──
   compose:
-    name: docker push/pull (ubuntu-latest)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
+    name: docker push/pull (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    # macOS provisions Docker via Colima (QEMU), which boots slowly — give it room.
+    timeout-minutes: 60
     env:
       AWS_ACCESS_KEY_ID: ruskery
       AWS_SECRET_ACCESS_KEY: ruskerysecret
@@ -28,8 +34,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The native daemon must resolve the presigned-URL host.
-      - name: Map host.docker.internal
+      # Apple-silicon runners can't nest a VM; the Intel runner can. This action
+      # installs Colima + Lima + the Docker CLI/Buildx/compose v2 plugin.
+      - name: Set up Docker (macOS Intel)
+        if: runner.os == 'macOS'
+        uses: douglascamata/setup-docker-macos-action@v1.0.1
+        with:
+          lima: v1.2.1
+          colima: v0.9.1
+          colima-network-address: false
+
+      - name: Ensure AWS CLI (macOS)
+        if: runner.os == 'macOS'
+        run: command -v aws >/dev/null 2>&1 || brew install awscli
+
+      # On Linux the native daemon needs to resolve the presigned-URL host to the
+      # published MinIO port; on macOS Colima provides host.docker.internal in-VM.
+      - name: Map host.docker.internal (Linux)
+        if: runner.os == 'Linux'
         run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
 
       - name: Build & start ruskery + MinIO
