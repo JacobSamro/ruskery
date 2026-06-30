@@ -107,6 +107,7 @@ endpoint = "https://t3.storage.dev"
 bucket   = "my-registry-bucket"
 region   = "auto"
 presign_ttl_secs = 900             # lifetime of pull redirect URLs
+# cdn_url = "https://cdn.example.com"  # Tigris custom domain to serve pulls from
 # access_key_id / secret_access_key: set via RUSKERY_STORAGE__* env
 
 [auth]

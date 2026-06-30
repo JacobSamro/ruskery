@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
+
 use crate::config::Config;
 use crate::db::Db;
 use crate::registry::uploads::UploadRegistry;
@@ -14,7 +16,8 @@ pub struct AppState(Arc<Inner>);
 pub struct Inner {
     pub config: Config,
     pub db: Db,
-    pub storage: Storage,
+    /// Hot-swappable storage client (rebuilt when admins change settings).
+    pub storage: ArcSwap<Storage>,
     /// In-memory registry of in-progress blob uploads (single-process).
     pub uploads: UploadRegistry,
     /// Secret used to sign session cookies and registry JWTs.
@@ -28,7 +31,7 @@ impl AppState {
         AppState(Arc::new(Inner {
             config,
             db,
-            storage,
+            storage: ArcSwap::from_pointee(storage),
             uploads: UploadRegistry::new(),
             secret_key,
             domains_changed: tokio::sync::Notify::new(),
@@ -53,8 +56,14 @@ impl AppState {
         &self.0.db
     }
 
-    pub fn storage(&self) -> &Storage {
-        &self.0.storage
+    /// Current storage client (cheap Arc load; safe to hold across awaits).
+    pub fn storage(&self) -> Arc<Storage> {
+        self.0.storage.load_full()
+    }
+
+    /// Replace the storage client after a settings change.
+    pub fn set_storage(&self, storage: Storage) {
+        self.0.storage.store(Arc::new(storage));
     }
 
     pub fn uploads(&self) -> &UploadRegistry {

@@ -64,6 +64,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/v1/domains/{domain}/primary", post(set_primary_domain))
         .route("/api/v1/orgs/{slug}/audit", get(list_audit))
+        .route(
+            "/api/v1/settings/storage",
+            get(get_storage_settings).put(update_storage_settings),
+        )
 }
 
 // ───────────────────────── helpers ─────────────────────────
@@ -643,6 +647,105 @@ async fn delete_token(
     Path(id): Path<String>,
 ) -> Result<Response> {
     db::users::delete_pat(state.db(), &user.id, &id).await?;
+    Ok(json_ok(json!({ "ok": true })))
+}
+
+// ───────────────────────── storage settings (instance admin) ─────────────────────────
+
+async fn get_storage_settings(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let cfg = db::settings::effective_storage(state.db(), &state.config().storage).await?;
+    // The secret is never returned — only whether one is set.
+    Ok(json_ok(json!({
+        "endpoint": cfg.endpoint,
+        "bucket": cfg.bucket,
+        "region": cfg.region,
+        "access_key_id": cfg.access_key_id,
+        "secret_set": !cfg.secret_access_key.is_empty(),
+        "cdn_url": cfg.cdn_url,
+        "force_path_style": cfg.force_path_style,
+        "presign_ttl_secs": cfg.presign_ttl_secs,
+    })))
+}
+
+#[derive(Deserialize)]
+struct StorageUpdate {
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    bucket: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    access_key_id: Option<String>,
+    /// Empty/absent keeps the existing secret.
+    #[serde(default)]
+    secret_access_key: Option<String>,
+    #[serde(default)]
+    cdn_url: Option<String>,
+    #[serde(default)]
+    force_path_style: Option<bool>,
+    #[serde(default)]
+    presign_ttl_secs: Option<u64>,
+}
+
+async fn update_storage_settings(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Json(req): Json<StorageUpdate>,
+) -> Result<Response> {
+    if !user.is_admin {
+        return Err(Error::Forbidden);
+    }
+    let db = state.db();
+    if let Some(v) = req.endpoint {
+        db::settings::set(db, "storage_endpoint", v.trim()).await?;
+    }
+    if let Some(v) = req.bucket {
+        db::settings::set(db, "storage_bucket", v.trim()).await?;
+    }
+    if let Some(v) = req.region {
+        db::settings::set(db, "storage_region", v.trim()).await?;
+    }
+    if let Some(v) = req.access_key_id {
+        db::settings::set(db, "storage_access_key_id", v.trim()).await?;
+    }
+    if let Some(v) = req.secret_access_key {
+        // Only overwrite the secret when a non-empty value is provided.
+        if !v.is_empty() {
+            db::settings::set(db, "storage_secret_access_key", &v).await?;
+        }
+    }
+    if let Some(v) = req.cdn_url {
+        db::settings::set(db, "storage_cdn_url", v.trim()).await?;
+    }
+    if let Some(v) = req.force_path_style {
+        db::settings::set(
+            db,
+            "storage_force_path_style",
+            if v { "true" } else { "false" },
+        )
+        .await?;
+    }
+    if let Some(v) = req.presign_ttl_secs {
+        db::settings::set(db, "storage_presign_ttl_secs", &v.to_string()).await?;
+    }
+
+    // Rebuild + hot-swap the storage client so changes take effect immediately.
+    let cfg = db::settings::effective_storage(db, &state.config().storage).await?;
+    let storage = crate::storage::Storage::new(&cfg)
+        .await
+        .map_err(|e| Error::bad_request(format!("invalid storage settings: {e}")))?;
+    state.set_storage(storage);
+
+    db::audit::record(db, Some(&user.id), None, "storage.update", None, None)
+        .await
+        .ok();
     Ok(json_ok(json!({ "ok": true })))
 }
 

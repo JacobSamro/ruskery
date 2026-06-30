@@ -127,11 +127,12 @@ pub async fn patch(state: &AppState, name: &str, upload_id: &str, body: Body) ->
         )
     })?;
     let mut s = session.lock().await;
+    let storage = state.storage();
 
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::bad_request(format!("body read: {e}")))?;
-        s.write(state.storage(), &chunk).await?;
+        s.write(&storage, &chunk).await?;
     }
 
     let total = s.total;
@@ -156,15 +157,15 @@ pub async fn finish(
         )
     })?;
     let mut s = session.lock().await;
+    let storage = state.storage();
 
     // Absorb any bytes sent with the final PUT.
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::bad_request(format!("body read: {e}")))?;
-        s.write(state.storage(), &chunk).await?;
+        s.write(&storage, &chunk).await?;
     }
 
-    let storage = state.storage();
     let computed = format!("sha256:{}", hex::encode(s.hasher.clone().finalize()));
     if !super::digests_equal(&computed, expected_digest) {
         let _ = storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;

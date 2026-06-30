@@ -19,6 +19,9 @@ region = "auto"
 # secret_access_key = "..."          # prefer RUSKERY_STORAGE__SECRET_ACCESS_KEY
 presign_ttl_secs = 900               # 15 min presigned-URL lifetime on pulls
 force_path_style = false
+# cdn_url = "https://cdn.example.com"  # Tigris custom domain for pull redirects
+# Tip: all [storage] values can also be edited live in the dashboard under
+# Settings -> Storage (admin) — those override what's set here.
 
 [auth]
 # secret_key left empty -> auto-generated and stored in the database on first run

@@ -19,7 +19,12 @@ use crate::error::{Error, Result};
 /// Handle to the object store.
 #[derive(Clone)]
 pub struct Storage {
+    /// Client for the real S3 API (uploads, copy, delete, head).
     client: Client,
+    /// Client whose endpoint is the CDN/custom domain; used to sign pull
+    /// redirects so the URL is served from (and valid for) that host. Equals
+    /// `client` when no CDN URL is configured.
+    presign_client: Client,
     bucket: String,
     presign_ttl: Duration,
 }
@@ -29,8 +34,7 @@ fn map_s3<E: std::fmt::Display>(ctx: &str, e: E) -> Error {
 }
 
 impl Storage {
-    /// Build the S3 client for the configured Tigris endpoint.
-    pub async fn new(cfg: &StorageConfig) -> Result<Self> {
+    fn build_client(cfg: &StorageConfig, endpoint: &str) -> Client {
         let creds = Credentials::new(
             cfg.access_key_id.clone(),
             cfg.secret_access_key.clone(),
@@ -41,7 +45,7 @@ impl Storage {
         let s3_cfg = aws_sdk_s3::Config::builder()
             .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
             .region(Region::new(cfg.region.clone()))
-            .endpoint_url(&cfg.endpoint)
+            .endpoint_url(endpoint)
             .credentials_provider(creds)
             .force_path_style(cfg.force_path_style)
             // Only add/validate flexible checksums when an operation requires
@@ -55,9 +59,21 @@ impl Storage {
                 aws_sdk_s3::config::ResponseChecksumValidation::WhenRequired,
             )
             .build();
+        Client::from_conf(s3_cfg)
+    }
+
+    /// Build the S3 client(s) for the configured Tigris endpoint (+ optional CDN).
+    pub async fn new(cfg: &StorageConfig) -> Result<Self> {
+        let client = Self::build_client(cfg, &cfg.endpoint);
+        let presign_client = if cfg.cdn_url.trim().is_empty() {
+            client.clone()
+        } else {
+            Self::build_client(cfg, cfg.cdn_url.trim())
+        };
 
         Ok(Self {
-            client: Client::from_conf(s3_cfg),
+            client,
+            presign_client,
             bucket: cfg.bucket.clone(),
             presign_ttl: Duration::from_secs(cfg.presign_ttl_secs),
         })
@@ -107,7 +123,7 @@ impl Storage {
         let cfg =
             PresigningConfig::expires_in(self.presign_ttl).map_err(|e| map_s3("presign cfg", e))?;
         let req = self
-            .client
+            .presign_client
             .get_object()
             .bucket(&self.bucket)
             .key(key)

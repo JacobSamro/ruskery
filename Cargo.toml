@@ -68,6 +68,9 @@ tokio-util = { version = "0.7", features = ["compat"] }
 # Rate limiting
 governor = "0.8"
 
+# Lock-free hot-swap of the storage client when settings change at runtime
+arc-swap = "1"
+
 # Utilities
 anyhow = "1"
 thiserror = "2"

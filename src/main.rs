@@ -122,7 +122,8 @@ async fn main() -> anyhow::Result<()> {
             db::migrate(&pool).await?;
             let secret_key =
                 db::settings::ensure_secret_key(&pool, &config.auth.secret_key).await?;
-            let storage = storage::Storage::new(&config.storage).await?;
+            let storage_cfg = db::settings::effective_storage(&pool, &config.storage).await?;
+            let storage = storage::Storage::new(&storage_cfg).await?;
             let state = state::AppState::new(config, pool, storage, secret_key);
             let n = gc::run(&state).await?;
             println!("garbage collected {n} blob(s)");
@@ -139,7 +140,8 @@ async fn main() -> anyhow::Result<()> {
             let secret_key =
                 db::settings::ensure_secret_key(&pool, &config.auth.secret_key).await?;
 
-            let storage = storage::Storage::new(&config.storage).await?;
+            let storage_cfg = db::settings::effective_storage(&pool, &config.storage).await?;
+            let storage = storage::Storage::new(&storage_cfg).await?;
 
             let tls_enabled = config.tls.enabled;
             let http_addr = config.server.http_addr.clone();

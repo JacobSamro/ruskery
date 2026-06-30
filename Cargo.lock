@@ -3069,6 +3069,7 @@ name = "ruskery"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "argon2",
  "aws-config",
  "aws-credential-types",

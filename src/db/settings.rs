@@ -28,6 +28,42 @@ pub async fn set(db: &Db, key: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Overlay any admin-saved storage overrides (from the `settings` table) on top
+/// of the bootstrap config from the file/env. DB values win when present.
+pub async fn effective_storage(
+    db: &Db,
+    base: &crate::config::StorageConfig,
+) -> anyhow::Result<crate::config::StorageConfig> {
+    let mut cfg = base.clone();
+    if let Some(v) = get(db, "storage_endpoint").await? {
+        cfg.endpoint = v;
+    }
+    if let Some(v) = get(db, "storage_bucket").await? {
+        cfg.bucket = v;
+    }
+    if let Some(v) = get(db, "storage_region").await? {
+        cfg.region = v;
+    }
+    if let Some(v) = get(db, "storage_access_key_id").await? {
+        cfg.access_key_id = v;
+    }
+    if let Some(v) = get(db, "storage_secret_access_key").await? {
+        cfg.secret_access_key = v;
+    }
+    if let Some(v) = get(db, "storage_cdn_url").await? {
+        cfg.cdn_url = v;
+    }
+    if let Some(v) = get(db, "storage_force_path_style").await? {
+        cfg.force_path_style = v == "true" || v == "1";
+    }
+    if let Some(v) = get(db, "storage_presign_ttl_secs").await? {
+        if let Ok(n) = v.parse() {
+            cfg.presign_ttl_secs = n;
+        }
+    }
+    Ok(cfg)
+}
+
 /// Return the instance signing secret, generating and persisting a fresh 32-byte
 /// random key on first run. A key from config (if non-empty) always wins.
 pub async fn ensure_secret_key(db: &Db, configured: &str) -> anyhow::Result<Vec<u8>> {

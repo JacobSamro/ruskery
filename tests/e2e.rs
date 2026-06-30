@@ -345,6 +345,63 @@ async fn end_to_end() {
         "pull-capped token must not be able to push"
     );
 
+    // ── storage settings + CDN pull host ─────────────────────────────
+    // Reads back the env-configured backend, then points the CDN URL at the
+    // same stub via a different hostname; pull redirects must now target it.
+    let st: serde_json::Value = dash
+        .get(format!("{base}/api/v1/settings/storage"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(st["bucket"], "test");
+    assert_eq!(
+        st["secret_set"], true,
+        "secret must never be returned but be marked set"
+    );
+
+    // 127.0.0.1 and localhost reach the same stub but are distinct host strings.
+    let cdn = format!("http://{}", stub.replace("127.0.0.1", "localhost"));
+    let put = dash
+        .put(format!("{base}/api/v1/settings/storage"))
+        .json(&json!({ "cdn_url": cdn }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status(), 200, "storage update should apply live");
+
+    // The pull redirect now points at the CDN host...
+    let redir = no_redirect_client()
+        .get(format!("{base}/v2/acme/app/blobs/{layer_d}"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redir.status(), 307);
+    let loc = redir.headers().get("location").unwrap().to_str().unwrap();
+    assert!(
+        loc.contains("localhost"),
+        "pull should redirect to the CDN host: {loc}"
+    );
+
+    // ...and the bytes still come back correctly through it.
+    let via_cdn = reg
+        .get(format!("{base}/v2/acme/app/blobs/{layer_d}"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(
+        via_cdn.as_ref(),
+        layer.as_slice(),
+        "pull via CDN host must match"
+    );
+
     // ── dashboard: users, members, teams ─────────────────────────────
     let mk_user = dash
         .post(format!("{base}/api/v1/users"))

@@ -12,6 +12,51 @@ const showAddUser = ref(false);
 const nu = reactive({ username: "", email: "", password: "", is_admin: false });
 const error = ref("");
 
+// Storage (Tigris) settings.
+const storage = reactive({
+  endpoint: "",
+  bucket: "",
+  region: "auto",
+  access_key_id: "",
+  secret_access_key: "",
+  secret_set: false,
+  cdn_url: "",
+  force_path_style: false,
+  presign_ttl_secs: 900,
+});
+const storageError = ref("");
+const storageSaved = ref(false);
+
+async function loadStorage() {
+  if (!me.value?.user.is_admin) return;
+  const s = await api.get<typeof storage>("/api/v1/settings/storage");
+  Object.assign(storage, s, { secret_access_key: "" });
+}
+
+async function saveStorage() {
+  storageError.value = "";
+  storageSaved.value = false;
+  try {
+    const body: Record<string, unknown> = {
+      endpoint: storage.endpoint,
+      bucket: storage.bucket,
+      region: storage.region,
+      access_key_id: storage.access_key_id,
+      cdn_url: storage.cdn_url,
+      force_path_style: storage.force_path_style,
+      presign_ttl_secs: Number(storage.presign_ttl_secs),
+    };
+    if (storage.secret_access_key) body.secret_access_key = storage.secret_access_key;
+    await api.put("/api/v1/settings/storage", body);
+    storage.secret_access_key = "";
+    storageSaved.value = true;
+    await loadStorage();
+    setTimeout(() => (storageSaved.value = false), 2000);
+  } catch (e) {
+    storageError.value = apiErrorMessage(e);
+  }
+}
+
 // Custom domains / TLS.
 interface DomainRow {
   domain: string;
@@ -58,6 +103,7 @@ async function loadUsers() {
 onMounted(() => {
   loadUsers();
   loadDomains();
+  loadStorage();
 });
 
 async function addUser() {
@@ -95,6 +141,69 @@ async function addUser() {
         <pre class="overflow-x-auto rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-xs leading-relaxed"><code>docker login {{ host }} -u {{ me?.user.username }} -p &lt;access-token&gt;
 docker tag my-image {{ host }}/{{ slug }}/my-image:latest
 docker push {{ host }}/{{ slug }}/my-image:latest</code></pre>
+      </UiCard>
+
+      <UiCard
+        v-if="me?.user.is_admin"
+        title="Storage (Tigris)"
+        description="S3-compatible backend for image layers. Use the CDN URL to serve pulls from a Tigris custom domain."
+      >
+        <form class="flex flex-col gap-4" @submit.prevent="saveStorage">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-medium">S3 endpoint</label>
+              <UiInput v-model="storage.endpoint" placeholder="https://t3.storage.dev" />
+            </div>
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-medium">Bucket</label>
+              <UiInput v-model="storage.bucket" placeholder="my-registry-bucket" />
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <label class="text-sm font-medium">CDN URL <span class="text-[var(--color-muted)]">(custom domain for pulls — optional)</span></label>
+            <UiInput v-model="storage.cdn_url" placeholder="https://cdn.yourcompany.com" />
+            <p class="text-xs text-[var(--color-muted)]">
+              When set, pull redirects are signed for and served from this host instead of the S3 endpoint.
+            </p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-medium">Access key ID</label>
+              <UiInput v-model="storage.access_key_id" />
+            </div>
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-medium">Secret access key</label>
+              <UiInput
+                v-model="storage.secret_access_key"
+                type="password"
+                :placeholder="storage.secret_set ? '•••••••• (unchanged)' : 'set a secret'"
+              />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 items-end gap-3">
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-medium">Region</label>
+              <UiInput v-model="storage.region" placeholder="auto" />
+            </div>
+            <div class="flex flex-col gap-1.5">
+              <label class="text-sm font-medium">Presign TTL (s)</label>
+              <UiInput v-model="storage.presign_ttl_secs" type="number" />
+            </div>
+            <label class="flex items-center gap-2 pb-2 text-sm">
+              <input v-model="storage.force_path_style" type="checkbox" /> Path-style
+            </label>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <p v-if="storageError" class="text-sm text-red-400">{{ storageError }}</p>
+            <p v-else-if="storageSaved" class="text-sm text-[var(--color-primary)]">Saved — applied live.</p>
+            <span v-else></span>
+            <UiButton type="submit">Save storage</UiButton>
+          </div>
+        </form>
       </UiCard>
 
       <UiCard

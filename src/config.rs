@@ -83,6 +83,10 @@ pub struct StorageConfig {
     pub presign_ttl_secs: u64,
     /// Use path-style addressing (`endpoint/bucket/key`) instead of virtual-hosted.
     pub force_path_style: bool,
+    /// Optional CDN / custom-domain base URL used to sign + serve pull
+    /// redirects (e.g. a Tigris custom domain). Empty → use `endpoint`.
+    #[serde(default)]
+    pub cdn_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +145,7 @@ impl Default for StorageConfig {
             secret_access_key: String::new(),
             presign_ttl_secs: 900,
             force_path_style: false,
+            cdn_url: String::new(),
         }
     }
 }
