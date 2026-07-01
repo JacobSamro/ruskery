@@ -58,17 +58,25 @@ struct Copied {
 }
 
 /// Kick off an import in the background. The task owns `up` (with credentials)
-/// for its lifetime and updates the `imports` row as it goes.
-pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream) {
+/// for its lifetime and updates the `imports` row as it goes. `image_prefix`, if
+/// set, restricts the copy to upstream repositories under that namespace.
+pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream, image_prefix: Option<String>) {
     let concurrency = state.config().import.concurrency.max(1);
     tokio::spawn(async move {
-        tracing::info!(import = %id, upstream = %up.url, org = %org.slug, concurrency, "import started");
+        tracing::info!(
+            import = %id,
+            upstream = %up.url,
+            org = %org.slug,
+            concurrency,
+            prefix = image_prefix.as_deref().unwrap_or(""),
+            "import started"
+        );
         let ctx = Ctx {
             concurrency,
             blob_sem: Semaphore::new(concurrency),
             inflight: StdMutex::new(HashMap::new()),
         };
-        let outcome = run(&state, &id, &org, &up, &ctx).await;
+        let outcome = run(&state, &id, &org, &up, &ctx, image_prefix.as_deref()).await;
         match outcome {
             Ok(()) => {
                 tracing::info!(import = %id, "import completed");
@@ -86,8 +94,21 @@ pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream) {
 /// or copying a single repo/tag is logged and skipped (progress still advances)
 /// so one bad image can't abort a large migration; only a catalog-level failure
 /// (unreachable/unauthorized) fails the whole job.
-async fn run(state: &AppState, id: &str, org: &Org, up: &OrgUpstream, ctx: &Ctx) -> Result<()> {
-    let repos = proxy::list_catalog(up).await?;
+async fn run(
+    state: &AppState,
+    id: &str,
+    org: &Org,
+    up: &OrgUpstream,
+    ctx: &Ctx,
+    image_prefix: Option<&str>,
+) -> Result<()> {
+    let mut repos = proxy::list_catalog(up).await?;
+    if let Some(prefix) = image_prefix {
+        // Keep only repositories under the requested namespace, so an import can
+        // target one account/registry-name on a shared host (e.g. DigitalOcean,
+        // where images live at `registry.digitalocean.com/<name>/<image>`).
+        repos.retain(|repo| repo_under_prefix(repo, prefix));
+    }
     db::imports::set_repos_total(state.db(), id, repos.len() as i64).await?;
 
     futures::stream::iter(repos.iter())
@@ -253,6 +274,17 @@ async fn copy_blob_once(
     Ok(true)
 }
 
+/// Whether `repo` sits under the namespace `prefix`: either the repo *is* the
+/// prefix, or it's a child path (`prefix/…`). A plain `starts_with` would wrongly
+/// match `my-registry-staging` against prefix `my-registry`, so we require a `/`
+/// boundary.
+fn repo_under_prefix(repo: &str, prefix: &str) -> bool {
+    repo == prefix
+        || repo
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Collect `(digest, size)` for the config + layer blobs of an image manifest.
 fn blob_descriptors(doc: &Value) -> Vec<(String, i64)> {
     let mut out = Vec::new();
@@ -271,4 +303,23 @@ fn blob_descriptors(doc: &Value) -> Vec<(String, i64)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repo_under_prefix;
+
+    #[test]
+    fn prefix_matches_namespace_not_substring() {
+        // Exact match and child paths are in.
+        assert!(repo_under_prefix("my-registry", "my-registry"));
+        assert!(repo_under_prefix("my-registry/api", "my-registry"));
+        assert!(repo_under_prefix("my-registry/team/api", "my-registry"));
+        // A shared string prefix that isn't a path boundary is out.
+        assert!(!repo_under_prefix("my-registry-staging/api", "my-registry"));
+        assert!(!repo_under_prefix("other/api", "my-registry"));
+        // Multi-segment prefixes work too.
+        assert!(repo_under_prefix("team/sub/app", "team/sub"));
+        assert!(!repo_under_prefix("team/subfoo/app", "team/sub"));
+    }
 }

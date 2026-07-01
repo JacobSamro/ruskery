@@ -2186,11 +2186,13 @@ async fn catalog_import() {
         }
     }
     let job = done.expect("import did not complete in time");
-    assert_eq!(job["repos_total"], 1);
-    assert_eq!(job["repos_done"], 1);
-    assert_eq!(job["tags_total"], 1);
-    assert_eq!(job["tags_done"], 1);
-    assert_eq!(job["blobs_done"], 2, "config + layer copied");
+    // No prefix → the whole catalog (both `library/test` and `tools/widget`).
+    assert_eq!(job["repos_total"], 2);
+    assert_eq!(job["repos_done"], 2);
+    assert_eq!(job["tags_total"], 2);
+    assert_eq!(job["tags_done"], 2);
+    // Both repos share the same config+layer, deduped to one copy each per org.
+    assert_eq!(job["blobs_done"], 2, "config + layer copied once (deduped)");
 
     // The imported repo is pullable from the target org, digest-identical.
     let tok: serde_json::Value = dash
@@ -2279,5 +2281,98 @@ async fn catalog_import() {
     assert!(
         counted,
         "manifest pull should increment the image pull count"
+    );
+}
+
+/// Bulk import with an image-prefix filter: the upstream catalog holds two repos
+/// under distinct namespaces (`library/test`, `tools/widget`); importing with
+/// `image_prefix: "tools"` must copy only the `tools/*` repo and skip the rest.
+#[tokio::test]
+async fn catalog_import_prefix() {
+    let stub = spawn_s3_stub().await;
+    let up = spawn_upstream_stub().await;
+    let rk = Ruskery::spawn_with(&stub, &[("RUSKERY_IMPORT__ALLOW_LOOPBACK", "true")]).await;
+    let base = rk.base.clone();
+
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+
+    // First-run setup (admin + org "acme").
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+
+    // Import only the `tools/` namespace.
+    let start = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports"))
+        .json(&json!({ "host": up.base, "image_prefix": "tools" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 201, "prefixed import should start");
+
+    // Poll until completed.
+    let mut done = None;
+    for _ in 0..100 {
+        let list: serde_json::Value = dash
+            .get(format!("{base}/api/v1/orgs/acme/imports"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let job = &list["imports"][0];
+        match job["status"].as_str() {
+            Some("completed") => {
+                done = Some(job.clone());
+                break;
+            }
+            Some("failed") => panic!("import failed: {:?}", job["error"]),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    let job = done.expect("prefixed import did not complete in time");
+    // Only `tools/widget` matched the prefix — the catalog's other repo is gone.
+    assert_eq!(
+        job["repos_total"], 1,
+        "prefix must narrow the catalog to one repo"
+    );
+    assert_eq!(job["repos_done"], 1);
+    assert_eq!(job["tags_total"], 1);
+    assert_eq!(job["tags_done"], 1);
+    assert_eq!(job["blobs_done"], 2, "config + layer of the one repo");
+
+    // The selected repo is present in the target org...
+    let selected = dash
+        .get(format!("{base}/api/v1/orgs/acme/repos/tools/widget"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        selected.status(),
+        200,
+        "tools/widget should have been imported"
+    );
+
+    // ...and the filtered-out repo was never imported.
+    let skipped = dash
+        .get(format!("{base}/api/v1/orgs/acme/repos/library/test"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        skipped.status(),
+        404,
+        "library/test is outside the prefix and must not be imported"
     );
 }

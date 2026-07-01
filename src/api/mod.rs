@@ -571,6 +571,18 @@ struct StartImportReq {
     host: String,
     username: Option<String>,
     password: Option<String>,
+    /// Optional repository-namespace filter: only import upstream repos under
+    /// this prefix (e.g. `my-registry` imports `my-registry/*`). Repos are
+    /// imported under their original names. Empty/absent → import everything.
+    image_prefix: Option<String>,
+}
+
+/// Normalize an image-prefix filter: trim surrounding whitespace and slashes so
+/// `foo`, `/foo/`, and `foo/` all mean the same namespace. Empty → no filter.
+fn normalize_image_prefix(input: Option<String>) -> Option<String> {
+    input
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Normalize a user-entered upstream into a base URL: accept a bare host
@@ -662,6 +674,7 @@ async fn start_import(
         username: nonempty(req.username),
         password: nonempty(req.password),
     };
+    let image_prefix = normalize_image_prefix(req.image_prefix);
 
     // Block obvious SSRF targets (cloud metadata, loopback), then fail fast on an
     // unreachable host or bad credentials, before creating a job.
@@ -680,7 +693,7 @@ async fn start_import(
     )
     .await
     .ok();
-    crate::import::spawn(state.clone(), id.clone(), org, up);
+    crate::import::spawn(state.clone(), id.clone(), org, up, image_prefix);
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
 }
 

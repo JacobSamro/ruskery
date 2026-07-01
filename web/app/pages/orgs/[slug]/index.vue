@@ -116,6 +116,7 @@ const orgs = ref<{ slug: string; name: string; role: string }[]>([]);
 const showImport = ref(false);
 const importOrg = ref("");
 const importHost = ref("");
+const importPrefix = ref("");
 const importUser = ref("");
 const importPass = ref("");
 const importing = ref(false);
@@ -123,6 +124,7 @@ const importError = ref("");
 
 async function openImport() {
   importHost.value = "";
+  importPrefix.value = "";
   importUser.value = "";
   importPass.value = "";
   importError.value = "";
@@ -150,6 +152,7 @@ async function startImport() {
   try {
     await api.post(`/api/v1/orgs/${target}/imports`, {
       host,
+      image_prefix: importPrefix.value.trim() || undefined,
       username: importUser.value.trim() || undefined,
       password: importPass.value || undefined,
     });
@@ -333,6 +336,23 @@ function importPct(i: ImportJob): number {
             data-testid="import-host"
           />
           <p class="mt-1.5 text-xs text-muted-foreground">Host or URL (HTTPS assumed).</p>
+        </div>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium">
+            Image prefix <span class="font-normal text-muted-foreground">(optional)</span>
+          </label>
+          <UiInput
+            v-model="importPrefix"
+            placeholder="your-username / registry-name"
+            data-testid="import-prefix"
+          />
+          <p class="mt-1.5 text-xs text-muted-foreground">
+            Only import repositories under this namespace — images are
+            <code>registry/prefix/image</code>. For most providers the prefix is your username or
+            registry name (e.g. the <code>myuser</code> in
+            <code>registry.example.com/myuser/image</code>). Leave empty to import everything, or
+            when your registry gives you a dedicated domain.
+          </p>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>

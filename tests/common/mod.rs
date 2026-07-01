@@ -212,9 +212,11 @@ fn etag(tag: String) -> Response {
 
 // ───────────────────── in-process upstream registry stub ─────────────────────
 
-/// A minimal upstream OCI registry serving one fixed image (`library/test`,
-/// tag `latest`) behind the bearer-token flow, for exercising the pull-through
-/// cache. Returns its base URL and the digests of what it holds.
+/// A minimal upstream OCI registry serving one fixed image (tag `latest`) behind
+/// the bearer-token flow, for exercising the pull-through cache and bulk import.
+/// Its catalog advertises two repos under distinct namespaces (`library/test`
+/// and `tools/widget`), both backed by the same image. Returns its base URL and
+/// the digests of what it holds.
 pub struct UpstreamStub {
     pub base: String,
     pub manifest_digest: String,
@@ -323,11 +325,14 @@ async fn up_handle(
     }
 
     // Catalog + tag listing, so the bulk importer can enumerate the registry.
+    // Two repos under distinct namespaces (`library/` and `tools/`) so the
+    // image-prefix filter has something to select between; both serve the same
+    // fixed image (manifests are keyed by reference, not repo).
     if path == "/v2/_catalog" {
         return (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
-            r#"{"repositories":["library/test"]}"#,
+            r#"{"repositories":["library/test","tools/widget"]}"#,
         )
             .into_response();
     }
