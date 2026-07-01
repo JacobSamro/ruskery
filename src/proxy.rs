@@ -79,6 +79,18 @@ fn is_blocked_ip_literal(host: &str) -> bool {
     }
 }
 
+/// True for `localhost` or a loopback IP literal — the one host class allowed to
+/// use a cleartext token realm (self-hosted / test upstreams).
+fn is_loopback_hostish(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    h.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 /// Read a response body into memory, refusing to buffer more than `max` bytes
 /// (checking `Content-Length` first, then enforcing while streaming so a lying
 /// or absent length can't get past the cap).
@@ -141,6 +153,25 @@ fn upstream_error(msg: impl Into<String>) -> Error {
         axum::http::StatusCode::BAD_GATEWAY,
         "UPSTREAM_UNAVAILABLE",
         msg.into(),
+    )
+}
+
+/// `413` when an upstream blob exceeds the configured single-blob size limit —
+/// mirrors the client-upload guard so the cache/import path is bounded too.
+fn blob_too_large(max: u64) -> Error {
+    Error::oci(
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        "SIZE_INVALID",
+        format!("upstream blob exceeds the maximum allowed size of {max} bytes"),
+    )
+}
+
+/// `403` when caching an upstream blob would push the org over its storage quota.
+fn quota_exceeded() -> Error {
+    Error::oci(
+        axum::http::StatusCode::FORBIDDEN,
+        "DENIED",
+        "organization storage quota exceeded",
     )
 }
 
@@ -236,7 +267,39 @@ pub async fn cache_blob(
 
     let storage = state.storage();
     let key = Storage::blob_key(org_id, digest);
-    let total = stream_to_storage(&storage, &key, resp, digest).await?;
+    let max_blob = state.config().quota.max_blob_bytes;
+
+    // Effective storage quota (org override, else instance default; 0 = unlimited).
+    // cache_blob is only reached on a genuine local miss, so this blob is new to
+    // the org and does consume quota.
+    let effective: u64 = match db::orgs::org_quota_bytes(state.db(), org_id).await? {
+        Some(bytes) => bytes.max(0) as u64,
+        None => state.config().quota.default_storage_bytes,
+    };
+    // Fast reject on the advertised length before downloading anything.
+    if let Some(len) = resp.content_length() {
+        if max_blob > 0 && len > max_blob {
+            return Err(blob_too_large(max_blob));
+        }
+        if effective > 0 {
+            let used = db::content::org_storage_used(state.db(), org_id).await?;
+            if (used.max(0) as u64).saturating_add(len) > effective {
+                return Err(quota_exceeded());
+            }
+        }
+    }
+
+    let total = stream_to_storage(&storage, &key, resp, digest, max_blob).await?;
+
+    // Authoritative quota check against the actual bytes (Content-Length may be
+    // absent or wrong): on breach, delete what we just wrote and don't record it.
+    if effective > 0 {
+        let used = db::content::org_storage_used(state.db(), org_id).await?;
+        if (used.max(0) as u64).saturating_add(total as u64) > effective {
+            let _ = storage.delete(&key).await;
+            return Err(quota_exceeded());
+        }
+    }
     db::content::record_blob(state.db(), org_id, digest, total).await?;
     Ok(())
 }
@@ -265,6 +328,7 @@ async fn stream_to_storage(
     key: &str,
     resp: reqwest::Response,
     expected_digest: &str,
+    max_blob: u64,
 ) -> Result<i64> {
     let upload_id = storage.create_multipart(key).await?;
 
@@ -287,6 +351,12 @@ async fn stream_to_storage(
         };
         hasher.update(&chunk);
         total += chunk.len() as u64;
+        // Refuse an over-size blob mid-stream so a malicious upstream can't push
+        // an unbounded object into storage before we'd notice.
+        if max_blob > 0 && total > max_blob {
+            error = Some(blob_too_large(max_blob));
+            break;
+        }
         buffer.extend_from_slice(&chunk);
         while buffer.len() >= PART_SIZE {
             let part: Vec<u8> = buffer.drain(..PART_SIZE).collect();
@@ -549,6 +619,22 @@ async fn bearer_token(up: &OrgUpstream, challenge: &str, scope: &str) -> Result<
     // send the org's Basic credentials — refuse to resolve it to a metadata
     // endpoint so a hostile upstream can't harvest creds via SSRF.
     guard_fetch_target(&realm).await?;
+    // When we'd attach credentials, refuse a cleartext realm on a non-loopback
+    // host: a hostile upstream could otherwise downgrade the token request to
+    // plain HTTP and harvest the creds off the wire. (Real registries use HTTPS
+    // realms; loopback is exempted for self-hosted/test upstreams.) A *public*
+    // HTTPS attacker realm is an inherent residual of the WWW-Authenticate model.
+    if up.username.is_some() {
+        let cleartext_public = url::Url::parse(&realm)
+            .ok()
+            .map(|u| u.scheme() == "http" && !u.host_str().is_some_and(is_loopback_hostish))
+            .unwrap_or(false);
+        if cleartext_public {
+            return Err(upstream_error(
+                "refusing to send upstream credentials to a non-HTTPS token realm",
+            ));
+        }
+    }
     let service = challenge_param(challenge, "service");
 
     let mut query: Vec<(&str, &str)> = Vec::new();
@@ -594,7 +680,17 @@ fn challenge_param(challenge: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{challenge_param, is_blocked_ip_literal};
+    use super::{challenge_param, is_blocked_ip_literal, is_loopback_hostish};
+
+    #[test]
+    fn loopback_hosts_are_recognized() {
+        assert!(is_loopback_hostish("localhost"));
+        assert!(is_loopback_hostish("LOCALHOST"));
+        assert!(is_loopback_hostish("127.0.0.1"));
+        assert!(is_loopback_hostish("[::1]"));
+        assert!(!is_loopback_hostish("registry.example.com"));
+        assert!(!is_loopback_hostish("10.0.0.1"));
+    }
 
     #[test]
     fn blocks_metadata_and_unspecified_ip_literals() {
