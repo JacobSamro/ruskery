@@ -1211,6 +1211,9 @@ async fn add_domain(
         ));
     }
     db::domains::add(state.db(), &domain).await?;
+    // Refresh immediately after the commit so the effective public URL reflects
+    // the new primary domain before any subsequent request observes it.
+    state.refresh_public_url().await;
     db::audit::record(
         state.db(),
         Some(&user.id),
@@ -1221,7 +1224,6 @@ async fn add_domain(
     )
     .await
     .ok();
-    state.refresh_public_url().await;
     state.notify_domains_changed();
     Ok(json_ok(json!({ "ok": true })))
 }
@@ -1235,6 +1237,7 @@ async fn delete_domain(
         return Err(Error::Forbidden);
     }
     db::domains::delete(state.db(), &domain).await?;
+    state.refresh_public_url().await;
     db::audit::record(
         state.db(),
         Some(&user.id),
@@ -1245,7 +1248,6 @@ async fn delete_domain(
     )
     .await
     .ok();
-    state.refresh_public_url().await;
     state.notify_domains_changed();
     Ok(json_ok(json!({ "ok": true })))
 }

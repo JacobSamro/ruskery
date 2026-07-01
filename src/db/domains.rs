@@ -37,10 +37,13 @@ pub async fn allowlist(db: &Db) -> Result<Vec<String>> {
 pub async fn add(db: &Db, domain: &str) -> Result<()> {
     // The first domain added becomes primary automatically, so the instance has
     // a public host to advertise (registry realm/audience) without a manual
-    // `set-primary` step. Later additions default to non-primary.
+    // `set-primary` step. Later additions default to non-primary. The check +
+    // insert run in one transaction so two concurrent first-adds can't both
+    // claim primary; `primary()` is ordering-tolerant regardless (see below).
+    let mut tx = db.begin().await?;
     let has_primary: bool =
         sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM domains WHERE is_primary = 1)")
-            .fetch_one(db)
+            .fetch_one(&mut *tx)
             .await?
             != 0;
     sqlx::query(
@@ -50,8 +53,9 @@ pub async fn add(db: &Db, domain: &str) -> Result<()> {
     .bind(domain)
     .bind(i64::from(!has_primary))
     .bind(now_rfc3339())
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 

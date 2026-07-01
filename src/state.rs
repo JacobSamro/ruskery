@@ -126,9 +126,13 @@ impl AppState {
         &self.0.secret_key
     }
 
-    /// Whether session cookies should carry the `Secure` attribute (only when
-    /// the public URL is HTTPS; lets dashboard login work over plain HTTP in dev).
+    /// Whether session cookies should carry the `Secure` attribute — true when
+    /// the *effective* public URL is HTTPS (explicit config or a primary custom
+    /// domain), so cookies set on a live HTTPS deployment are marked `Secure`
+    /// even when the URL was derived from a domain rather than pinned in config.
+    /// Stays false during the IP-only bootstrap phase so plain-HTTP dashboard
+    /// login keeps working until a domain is in place.
     pub fn cookie_secure(&self) -> bool {
-        self.0.config.server.public_url.starts_with("https://")
+        self.public_url().starts_with("https://")
     }
 }
