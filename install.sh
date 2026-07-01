@@ -41,20 +41,30 @@ done
 # ── resolve version ──────────────────────────────────────────────
 if [ "$VERSION" = "latest" ]; then
   log "resolving latest release of $REPO"
-  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+  # Buffer the response before grepping: piping curl straight into `grep -m1`
+  # lets grep close the pipe on the first match, and curl then reports
+  # "(23) Failure writing output to destination" on the broken pipe.
+  release_json="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
+  VERSION="$(printf '%s\n' "$release_json" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
   [ -n "$VERSION" ] || err "could not determine latest version"
 fi
+
+# Release tags carry a leading "v" (v0.8.1); the binary reports a bare semver
+# (0.8.1). Compare and display the bare form so re-running an up-to-date install
+# isn't mistaken for an upgrade. The download URL below still uses $VERSION (tag).
+VERSION_NUM="${VERSION#v}"
 
 # Detect an existing install so we can report (and behave like) an upgrade.
 OLD_VERSION=""
 if [ -x "$PREFIX/ruskery" ]; then
   OLD_VERSION="$("$PREFIX/ruskery" --version 2>/dev/null | awk '{print $2}')"
 fi
-if [ -n "$OLD_VERSION" ]; then
-  log "upgrading ruskery $OLD_VERSION -> $VERSION ($arch)"
+if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$VERSION_NUM" ]; then
+  log "upgrading ruskery $OLD_VERSION -> $VERSION_NUM ($arch)"
+elif [ -n "$OLD_VERSION" ]; then
+  log "reinstalling ruskery $VERSION_NUM ($arch)"
 else
-  log "installing ruskery $VERSION ($arch)"
+  log "installing ruskery $VERSION_NUM ($arch)"
 fi
 
 base="https://github.com/${REPO}/releases/download/${VERSION}"
@@ -163,10 +173,10 @@ UNIT
   systemctl restart ruskery || log "could not start yet — finish editing $CONFIG_DIR/config.toml, then: systemctl restart ruskery"
 fi
 
-if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$VERSION" ]; then
+if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$VERSION_NUM" ]; then
   cat <<EOF
 
-ruskery upgraded: $OLD_VERSION -> $VERSION
+ruskery upgraded: $OLD_VERSION -> $VERSION_NUM
 
   Binary : $PREFIX/ruskery   (replaced)
   Config : $CONFIG_DIR/config.toml   (kept)
@@ -177,14 +187,14 @@ EOF
 elif [ -n "$OLD_VERSION" ]; then
   cat <<EOF
 
-ruskery is already at $VERSION — reinstalled and restarted.
+ruskery is already at $VERSION_NUM — reinstalled and restarted.
 
 Logs: journalctl -u ruskery -f
 EOF
 else
   cat <<EOF
 
-ruskery $VERSION installed.
+ruskery $VERSION_NUM installed.
 
   Binary : $PREFIX/ruskery
   Config : $CONFIG_DIR/config.toml   (set your Tigris bucket + keys)
