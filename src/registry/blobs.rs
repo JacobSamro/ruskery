@@ -79,7 +79,8 @@ pub async fn get(
 /// it's genuinely unknown. Blobs are content-addressed, so a cached copy is
 /// digest-verified by [`crate::proxy::cache_blob`] before it's recorded.
 async fn ensure_cached(state: &AppState, org_id: &str, repo: &str, digest: &str) -> Result<i64> {
-    if let Some(up) = db::orgs::org_upstream(state.db(), org_id).await? {
+    if let Some(mut up) = db::orgs::org_upstream(state.db(), org_id).await? {
+        up.trusted_realm_hosts = state.config().import.trusted_realm_hosts.clone();
         crate::proxy::cache_blob(state, org_id, repo, digest, &up).await?;
         if let Some(size) = db::content::blob_size(state.db(), org_id, digest).await? {
             return Ok(size);

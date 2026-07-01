@@ -56,6 +56,12 @@ pub struct ImportConfig {
     /// repositories/images are copied in parallel). Higher = faster on a fast
     /// link, at the cost of more upstream connections + SQLite write pressure.
     pub concurrency: usize,
+    /// Extra token-realm hosts allowed to receive the upstream's credentials
+    /// during the bearer-token dance. Credentials are sent to a realm only if
+    /// its host matches the upstream host, is loopback, is a built-in well-known
+    /// auth host (e.g. `auth.docker.io`), or appears here — so a hostile upstream
+    /// can't point the realm at an attacker host to harvest the credentials.
+    pub trusted_realm_hosts: Vec<String>,
 }
 
 impl Default for ImportConfig {
@@ -63,6 +69,7 @@ impl Default for ImportConfig {
         Self {
             allow_loopback: false,
             concurrency: 6,
+            trusted_realm_hosts: Vec::new(),
         }
     }
 }

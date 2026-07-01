@@ -68,6 +68,10 @@ pub struct OrgUpstream {
     /// Optional credentials for a private upstream.
     pub username: Option<String>,
     pub password: Option<String>,
+    /// Admin-configured extra token-realm hosts allowed to receive credentials
+    /// (from `[import] trusted_realm_hosts`). Populated by the caller, which has
+    /// config access; the DB builder leaves it empty.
+    pub trusted_realm_hosts: Vec<String>,
 }
 
 /// The org's upstream-mirror config, or `None` if it is a normal (writable) org.
@@ -84,6 +88,7 @@ pub async fn org_upstream(db: &Db, org_id: &str) -> Result<Option<OrgUpstream>> 
             url: url.trim_end_matches('/').to_string(),
             username: nonempty(username),
             password: nonempty(password),
+            trusted_realm_hosts: Vec::new(),
         })
     }))
 }

@@ -79,6 +79,41 @@ fn is_blocked_ip_literal(host: &str) -> bool {
     }
 }
 
+/// Built-in token-realm hosts trusted to receive credentials even though they
+/// differ from the registry host — well-known public registries whose auth
+/// service lives on a separate domain. (GHCR/DOCR use a same-host realm, so
+/// they're covered by the host-match rule without needing an entry here.)
+const WELL_KNOWN_REALM_HOSTS: &[&str] = &["auth.docker.io"];
+
+/// Whether it's safe to send the upstream's credentials to `realm`. Trusted when
+/// the realm host matches the upstream host, is loopback, is a built-in
+/// well-known auth host, or is in the admin's `trusted_realm_hosts` allowlist —
+/// so a hostile upstream can't name an attacker host in `WWW-Authenticate` and
+/// harvest the credentials.
+fn realm_is_trusted(realm: &str, upstream_url: &str, extra: &[String]) -> bool {
+    let host = |u: &str| {
+        url::Url::parse(u)
+            .ok()
+            .and_then(|p| p.host_str().map(|h| h.to_ascii_lowercase()))
+    };
+    let Some(realm_host) = host(realm) else {
+        return false;
+    };
+    if host(upstream_url).is_some_and(|up| up == realm_host) {
+        return true; // same host as the registry itself
+    }
+    if is_loopback_hostish(&realm_host) {
+        return true;
+    }
+    if WELL_KNOWN_REALM_HOSTS
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(&realm_host))
+    {
+        return true;
+    }
+    extra.iter().any(|h| h.eq_ignore_ascii_case(&realm_host))
+}
+
 /// True for `localhost` or a loopback IP literal — the one host class allowed to
 /// use a cleartext token realm (self-hosted / test upstreams).
 fn is_loopback_hostish(host: &str) -> bool {
@@ -619,12 +654,22 @@ async fn bearer_token(up: &OrgUpstream, challenge: &str, scope: &str) -> Result<
     // send the org's Basic credentials — refuse to resolve it to a metadata
     // endpoint so a hostile upstream can't harvest creds via SSRF.
     guard_fetch_target(&realm).await?;
-    // When we'd attach credentials, refuse a cleartext realm on a non-loopback
-    // host: a hostile upstream could otherwise downgrade the token request to
-    // plain HTTP and harvest the creds off the wire. (Real registries use HTTPS
-    // realms; loopback is exempted for self-hosted/test upstreams.) A *public*
-    // HTTPS attacker realm is an inherent residual of the WWW-Authenticate model.
+    // Before attaching credentials, make sure the realm is one we trust — its
+    // host must match the upstream, be loopback, be a well-known auth host, or be
+    // allowlisted — and, additionally, not cleartext on a non-loopback host. This
+    // stops a hostile upstream from naming an attacker realm (over HTTP or HTTPS)
+    // in WWW-Authenticate to harvest the credentials.
     if up.username.is_some() {
+        if !realm_is_trusted(&realm, &up.url, &up.trusted_realm_hosts) {
+            let host = url::Url::parse(&realm)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_else(|| "?".to_string());
+            return Err(upstream_error(format!(
+                "refusing to send upstream credentials to untrusted token-realm host '{host}'; \
+                 add it to import.trusted_realm_hosts if it is legitimate"
+            )));
+        }
         let cleartext_public = url::Url::parse(&realm)
             .ok()
             .map(|u| u.scheme() == "http" && !u.host_str().is_some_and(is_loopback_hostish))
@@ -680,7 +725,42 @@ fn challenge_param(challenge: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{challenge_param, is_blocked_ip_literal, is_loopback_hostish};
+    use super::{challenge_param, is_blocked_ip_literal, is_loopback_hostish, realm_is_trusted};
+
+    #[test]
+    fn realm_trust_allows_expected_and_blocks_attacker() {
+        let none: &[String] = &[];
+        // Same host as the registry, and well-known Docker Hub auth host.
+        assert!(realm_is_trusted(
+            "https://registry.example.com/token",
+            "https://registry.example.com",
+            none
+        ));
+        assert!(realm_is_trusted(
+            "https://auth.docker.io/token",
+            "https://registry-1.docker.io",
+            none
+        ));
+        // Loopback (self-hosted / tests).
+        assert!(realm_is_trusted(
+            "http://127.0.0.1:5000/token",
+            "http://127.0.0.1:5000",
+            none
+        ));
+        // A hostile upstream naming an attacker realm is refused (even over HTTPS)…
+        assert!(!realm_is_trusted(
+            "https://attacker.example/token",
+            "https://registry-1.docker.io",
+            none
+        ));
+        // …unless the admin explicitly allowlists that realm host.
+        let allow = vec!["attacker.example".to_string()];
+        assert!(realm_is_trusted(
+            "https://attacker.example/token",
+            "https://registry-1.docker.io",
+            &allow
+        ));
+    }
 
     #[test]
     fn loopback_hosts_are_recognized() {

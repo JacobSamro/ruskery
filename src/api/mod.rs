@@ -718,6 +718,7 @@ async fn start_import(
         url,
         username: nonempty(req.username),
         password: nonempty(req.password),
+        trusted_realm_hosts: state.config().import.trusted_realm_hosts.clone(),
     };
     let namespace = normalize_image_prefix(req.image_prefix);
 
@@ -761,6 +762,7 @@ async fn discover_namespaces(
         url: provider.registry_url().unwrap_or_default(),
         username: nonempty(req.username),
         password: nonempty(req.password),
+        trusted_realm_hosts: state.config().import.trusted_realm_hosts.clone(),
     };
     let namespaces = crate::providers::discover(provider, &up).await?;
     Ok(json_ok(json!({ "namespaces": namespaces })))
@@ -788,6 +790,7 @@ async fn test_connection(
         url,
         username: nonempty(req.username),
         password: nonempty(req.password),
+        trusted_realm_hosts: state.config().import.trusted_realm_hosts.clone(),
     };
 
     let detail = match provider {

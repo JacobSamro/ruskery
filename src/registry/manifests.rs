@@ -162,7 +162,8 @@ pub async fn get(
 
     // Local miss: if this org mirrors an upstream, fetch + cache the manifest,
     // then serve the freshly-cached copy.
-    if let Some(up) = db::orgs::org_upstream(state.db(), &org.id).await? {
+    if let Some(mut up) = db::orgs::org_upstream(state.db(), &org.id).await? {
+        up.trusted_realm_hosts = state.config().import.trusted_realm_hosts.clone();
         crate::proxy::cache_manifest(state, org, repo_name, reference, &up).await?;
         if let Some(resp) = serve_local(state, org, repo_name, reference, head_only).await? {
             return Ok(resp);
