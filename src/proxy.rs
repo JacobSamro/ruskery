@@ -122,17 +122,22 @@ async fn send_get(url: &str, accept: Option<&str>, auth: Auth<'_>) -> Result<req
     }
 }
 
-/// Built-in token-realm hosts trusted to receive credentials even though they
-/// differ from the registry host — well-known public registries whose auth
-/// service lives on a separate domain. (GHCR/DOCR use a same-host realm, so
-/// they're covered by the host-match rule without needing an entry here.)
-const WELL_KNOWN_REALM_HOSTS: &[&str] = &["auth.docker.io"];
+/// Built-in `(registry hosts, auth-realm host)` pairings for well-known public
+/// registries whose auth service lives on a separate domain. The realm is
+/// trusted *only* when the configured upstream is the matching registry — so an
+/// arbitrary upstream can't cause credentials to be sent to, e.g., Docker's auth
+/// host. (GHCR/DOCR use a same-host realm, covered by the host-match rule.)
+const WELL_KNOWN_REALM_PAIRS: &[(&[&str], &str)] = &[(
+    &["registry-1.docker.io", "index.docker.io", "docker.io"],
+    "auth.docker.io",
+)];
 
 /// Whether it's safe to send the upstream's credentials to `realm`. Trusted when
-/// the realm host matches the upstream host, is loopback, is a built-in
-/// well-known auth host, or is in the admin's `trusted_realm_hosts` allowlist —
-/// so a hostile upstream can't name an attacker host in `WWW-Authenticate` and
-/// harvest the credentials.
+/// the realm host matches the upstream host, is loopback, is the known auth host
+/// *for that specific upstream* (see [`WELL_KNOWN_REALM_PAIRS`]), or is in the
+/// admin's `trusted_realm_hosts` allowlist — so a hostile upstream can't name an
+/// attacker (or unrelated third-party) host in `WWW-Authenticate` and harvest
+/// the credentials.
 fn realm_is_trusted(realm: &str, upstream_url: &str, extra: &[String]) -> bool {
     let host = |u: &str| {
         url::Url::parse(u)
@@ -142,17 +147,22 @@ fn realm_is_trusted(realm: &str, upstream_url: &str, extra: &[String]) -> bool {
     let Some(realm_host) = host(realm) else {
         return false;
     };
-    if host(upstream_url).is_some_and(|up| up == realm_host) {
+    let up_host = host(upstream_url);
+    if up_host.as_deref() == Some(realm_host.as_str()) {
         return true; // same host as the registry itself
     }
     if is_loopback_hostish(&realm_host) {
         return true;
     }
-    if WELL_KNOWN_REALM_HOSTS
-        .iter()
-        .any(|w| w.eq_ignore_ascii_case(&realm_host))
-    {
-        return true;
+    // A built-in cross-host auth realm is trusted only when paired with its own
+    // registry upstream, not for any upstream.
+    if let Some(up) = &up_host {
+        if WELL_KNOWN_REALM_PAIRS.iter().any(|(registries, realm_h)| {
+            realm_h.eq_ignore_ascii_case(&realm_host)
+                && registries.iter().any(|r| r.eq_ignore_ascii_case(up))
+        }) {
+            return true;
+        }
     }
     extra.iter().any(|h| h.eq_ignore_ascii_case(&realm_host))
 }
@@ -764,9 +774,16 @@ mod tests {
             "https://registry.example.com",
             none
         ));
+        // Docker Hub's cross-host auth realm — trusted only for a Docker Hub
+        // upstream, not for an arbitrary one.
         assert!(realm_is_trusted(
             "https://auth.docker.io/token",
             "https://registry-1.docker.io",
+            none
+        ));
+        assert!(!realm_is_trusted(
+            "https://auth.docker.io/token",
+            "https://myprivate.registry.example",
             none
         ));
         // Loopback (self-hosted / tests).
