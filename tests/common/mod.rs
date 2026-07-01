@@ -370,6 +370,106 @@ async fn up_handle(
     StatusCode::NOT_FOUND.into_response()
 }
 
+// ───────────────────── provider management-API stubs ────────────────────────
+//
+// These stub the *enumeration* APIs (not OCI). Point ruskery at them with
+// `RUSKERY_DO_API_BASE` / `RUSKERY_GH_API_BASE`, and point the paired OCI copy
+// at the upstream stub with `RUSKERY_DO_REGISTRY_BASE` / `RUSKERY_GH_REGISTRY_BASE`.
+
+fn require_bearer(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.strip_prefix("Bearer ").is_some_and(|t| !t.is_empty()))
+}
+
+fn json_body(body: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
+/// A stub of DigitalOcean's registry management API. One registry, `acmereg`,
+/// with two repositories (`api`, `web`).
+pub struct DoApiStub {
+    pub base: String,
+    pub registry: String,
+}
+
+pub async fn spawn_do_api_stub() -> DoApiStub {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{}:{}", addr.ip(), addr.port());
+    let app = Router::new().fallback(do_api_handle);
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    DoApiStub {
+        base,
+        registry: "acmereg".into(),
+    }
+}
+
+async fn do_api_handle(method: Method, uri: Uri, headers: HeaderMap) -> Response {
+    if method != Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if !require_bearer(&headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match uri.path() {
+        "/v2/registries" => json_body(r#"{"registries":[{"name":"acmereg"}]}"#),
+        // Same body for the count probe (?per_page=1) and the full list; the
+        // count reads `meta.total`, the list reads `repositories`. No next link.
+        "/v2/registries/acmereg/repositoriesV2" => json_body(
+            r#"{"repositories":[{"name":"api"},{"name":"web"}],"meta":{"total":2},"links":{}}"#,
+        ),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// A stub of GitHub's API for GHCR enumeration. Authenticated user `acmeuser`
+/// (packages `api`, `web`), member of org `acme-org` (package `svc`).
+pub struct GithubApiStub {
+    pub base: String,
+    pub user: String,
+    pub org: String,
+}
+
+pub async fn spawn_github_api_stub() -> GithubApiStub {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{}:{}", addr.ip(), addr.port());
+    let app = Router::new().fallback(github_api_handle);
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    GithubApiStub {
+        base,
+        user: "acmeuser".into(),
+        org: "acme-org".into(),
+    }
+}
+
+async fn github_api_handle(method: Method, uri: Uri, headers: HeaderMap) -> Response {
+    if method != Method::GET {
+        return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if !require_bearer(&headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match uri.path() {
+        "/user" => json_body(r#"{"login":"acmeuser"}"#),
+        "/user/orgs" => json_body(r#"[{"login":"acme-org"}]"#),
+        "/user/packages" => json_body(r#"[{"name":"api"},{"name":"web"}]"#),
+        "/orgs/acme-org/packages" => json_body(r#"[{"name":"svc"}]"#),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 // ───────────────────────── ruskery binary launcher ─────────────────────────
 
 /// A running `ruskery serve` child process; killed on drop.

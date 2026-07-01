@@ -40,6 +40,10 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/orgs/{slug}/imports",
             get(list_imports).post(start_import),
         )
+        .route(
+            "/api/v1/orgs/{slug}/imports/discover",
+            post(discover_namespaces),
+        )
         .route("/api/v1/orgs/{slug}/analytics", get(org_analytics))
         .route(
             "/api/v1/orgs/{slug}/repos/{*name}",
@@ -567,14 +571,30 @@ async fn create_repo(
 
 #[derive(Deserialize)]
 struct StartImportReq {
-    /// Upstream registry host or base URL, e.g. `registry.digitalocean.com`.
+    /// Enumeration provider: `generic` (OCI `/v2/_catalog`, default),
+    /// `digitalocean`, or `github`. API-backed providers ignore `host` and use a
+    /// fixed registry host.
+    provider: Option<String>,
+    /// Upstream registry host or base URL (generic provider only), e.g.
+    /// `registry.digitalocean.com`.
+    #[serde(default)]
     host: String,
     username: Option<String>,
     password: Option<String>,
-    /// Optional repository-namespace filter: only import upstream repos under
-    /// this prefix (e.g. `my-registry` imports `my-registry/*`). Repos are
-    /// imported under their original names. Empty/absent → import everything.
+    /// The namespace to import: a DigitalOcean registry name / GitHub owner (for
+    /// those providers), or an optional repository-prefix filter over
+    /// `/v2/_catalog` for the generic provider. Empty/absent (generic) → import
+    /// everything.
     image_prefix: Option<String>,
+}
+
+/// Request to enumerate a provider's selectable namespaces (registries/owners)
+/// for the import dialog's dropdown.
+#[derive(serde::Deserialize)]
+struct DiscoverReq {
+    provider: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 /// Normalize an image-prefix filter: trim surrounding whitespace and slashes so
@@ -669,16 +689,26 @@ async fn start_import(
 ) -> Result<Response> {
     let (org, _) = admin_of(&state, &user.id, &slug).await?;
     let nonempty = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
+    let provider = crate::providers::Provider::parse(req.provider.as_deref());
+    // API-backed providers copy from a fixed, well-known registry host; only the
+    // generic provider trusts a user-supplied host (and so needs the SSRF guard).
+    let url = match provider.registry_url() {
+        Some(fixed) => fixed,
+        None => normalize_upstream(&req.host)?,
+    };
     let up = db::orgs::OrgUpstream {
-        url: normalize_upstream(&req.host)?,
+        url,
         username: nonempty(req.username),
         password: nonempty(req.password),
     };
-    let image_prefix = normalize_image_prefix(req.image_prefix);
+    let namespace = normalize_image_prefix(req.image_prefix);
 
-    // Block obvious SSRF targets (cloud metadata, loopback), then fail fast on an
-    // unreachable host or bad credentials, before creating a job.
-    guard_upstream_host(&up.url, state.config().import.allow_loopback).await?;
+    // Block obvious SSRF targets (cloud metadata, loopback) for a user-supplied
+    // host, then fail fast on unreachable host / bad credentials before creating
+    // a job. Fixed provider hosts are trusted public registries.
+    if provider == crate::providers::Provider::Generic {
+        guard_upstream_host(&up.url, state.config().import.allow_loopback).await?;
+    }
     crate::proxy::probe(&up).await?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -693,8 +723,29 @@ async fn start_import(
     )
     .await
     .ok();
-    crate::import::spawn(state.clone(), id.clone(), org, up, image_prefix);
+    crate::import::spawn(state.clone(), id.clone(), org, up, provider, namespace);
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
+}
+
+/// Enumerate a provider's selectable namespaces (DigitalOcean registries / GitHub
+/// owners) so the import dialog can offer a dropdown instead of a free-text field
+/// (owner/admin). Credentials are used only for this lookup and never persisted.
+async fn discover_namespaces(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Path(slug): Path<String>,
+    Json(req): Json<DiscoverReq>,
+) -> Result<Response> {
+    admin_of(&state, &user.id, &slug).await?;
+    let nonempty = |s: Option<String>| s.filter(|v: &String| !v.trim().is_empty());
+    let provider = crate::providers::Provider::parse(req.provider.as_deref());
+    let up = db::orgs::OrgUpstream {
+        url: provider.registry_url().unwrap_or_default(),
+        username: nonempty(req.username),
+        password: nonempty(req.password),
+    };
+    let namespaces = crate::providers::discover(provider, &up).await?;
+    Ok(json_ok(json!({ "namespaces": namespaces })))
 }
 
 /// List this org's import jobs (owner/admin), most recent first, with progress.

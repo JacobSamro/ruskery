@@ -2376,3 +2376,227 @@ async fn catalog_import_prefix() {
         "library/test is outside the prefix and must not be imported"
     );
 }
+
+/// Poll an org's most-recent import job until it completes (bounded so a hang
+/// fails the test instead of spinning forever).
+async fn poll_import(dash: &reqwest::Client, base: &str, slug: &str) -> serde_json::Value {
+    for _ in 0..100 {
+        let list: serde_json::Value = dash
+            .get(format!("{base}/api/v1/orgs/{slug}/imports"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let job = &list["imports"][0];
+        match job["status"].as_str() {
+            Some("completed") => return job.clone(),
+            Some("failed") => panic!("import failed: {:?}", job["error"]),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    panic!("import did not complete in time");
+}
+
+/// DigitalOcean provider: enumerate repositories via DO's management API (not the
+/// OCI `/v2/_catalog`, which under-reports multi-registry accounts), then copy.
+/// The DO API + registry hosts are pointed at local stubs via env.
+#[tokio::test]
+async fn provider_import_digitalocean() {
+    let stub = spawn_s3_stub().await;
+    let up = spawn_upstream_stub().await;
+    let do_api = spawn_do_api_stub().await;
+    let rk = Ruskery::spawn_with(
+        &stub,
+        &[
+            ("RUSKERY_DO_API_BASE", do_api.base.as_str()),
+            ("RUSKERY_DO_REGISTRY_BASE", up.base.as_str()),
+        ],
+    )
+    .await;
+    let base = rk.base.clone();
+
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let reg = reqwest::Client::new();
+
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+
+    // Dropdown discovery: the DO API stub lists one registry with two repos.
+    let disc: serde_json::Value = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports/discover"))
+        .json(&json!({ "provider": "digitalocean", "username": "dop_tok", "password": "dop_tok" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(disc["namespaces"][0]["name"], "acmereg");
+    assert_eq!(disc["namespaces"][0]["repo_count"], 2);
+
+    // Import that registry (image_prefix carries the picked registry name).
+    let start = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports"))
+        .json(&json!({
+            "provider": "digitalocean", "image_prefix": "acmereg",
+            "username": "dop_tok", "password": "dop_tok"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 201, "DO import should start");
+
+    let job = poll_import(&dash, &base, "acme").await;
+    assert_eq!(job["repos_total"], 2, "acmereg/api + acmereg/web");
+    assert_eq!(job["repos_done"], 2);
+    assert_eq!(job["tags_total"], 2);
+    assert_eq!(
+        job["blobs_done"], 2,
+        "shared image deduped across the two repos"
+    );
+
+    // Imported under the registry-prefixed name (`acmereg/api`) and pullable.
+    let tok: serde_json::Value = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "ci" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pat = tok["token"].as_str().unwrap().to_string();
+    let jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pat,
+        "repository:acme/acmereg/api:pull",
+    )
+    .await;
+    let m = reg
+        .get(format!("{base}/v2/acme/acmereg/api/manifests/latest"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(m.status(), 200, "imported DO repo should be pullable");
+    assert_eq!(
+        m.headers()
+            .get("docker-content-digest")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        up.manifest_digest
+    );
+}
+
+/// GitHub (GHCR) provider: enumerate container packages via the GitHub API, then
+/// copy. Owners (the user + orgs) populate the dialog dropdown; importing the
+/// user's own namespace copies its packages under `<owner>/<pkg>`.
+#[tokio::test]
+async fn provider_import_github() {
+    let stub = spawn_s3_stub().await;
+    let up = spawn_upstream_stub().await;
+    let gh = spawn_github_api_stub().await;
+    let rk = Ruskery::spawn_with(
+        &stub,
+        &[
+            ("RUSKERY_GH_API_BASE", gh.base.as_str()),
+            ("RUSKERY_GH_REGISTRY_BASE", up.base.as_str()),
+        ],
+    )
+    .await;
+    let base = rk.base.clone();
+
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let reg = reqwest::Client::new();
+
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+
+    // Discovery lists the authenticated user plus its orgs.
+    let disc: serde_json::Value = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports/discover"))
+        .json(&json!({ "provider": "github", "username": "acmeuser", "password": "ghp_tok" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owners: Vec<&str> = disc["namespaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap())
+        .collect();
+    assert!(owners.contains(&"acmeuser"), "own account is an owner");
+    assert!(owners.contains(&"acme-org"), "member org is an owner");
+
+    // Import the user's own container packages (api, web).
+    let start = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports"))
+        .json(&json!({
+            "provider": "github", "image_prefix": "acmeuser",
+            "username": "acmeuser", "password": "ghp_tok"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 201, "GHCR import should start");
+
+    let job = poll_import(&dash, &base, "acme").await;
+    assert_eq!(job["repos_total"], 2, "acmeuser/api + acmeuser/web");
+    assert_eq!(job["blobs_done"], 2);
+
+    let tok: serde_json::Value = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "ci" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pat = tok["token"].as_str().unwrap().to_string();
+    let jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pat,
+        "repository:acme/acmeuser/api:pull",
+    )
+    .await;
+    let m = reg
+        .get(format!("{base}/v2/acme/acmeuser/api/manifests/latest"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(m.status(), 200, "imported GHCR package should be pullable");
+}

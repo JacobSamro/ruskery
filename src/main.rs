@@ -10,6 +10,7 @@ mod error;
 mod gc;
 mod import;
 mod models;
+mod providers;
 mod proxy;
 mod rate_limit;
 mod registry;

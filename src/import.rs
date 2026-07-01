@@ -30,6 +30,7 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use crate::db;
 use crate::db::orgs::{Org, OrgUpstream};
 use crate::error::{Error, Result};
+use crate::providers::{self, Provider};
 use crate::proxy;
 use crate::registry::manifests;
 use crate::state::AppState;
@@ -58,9 +59,17 @@ struct Copied {
 }
 
 /// Kick off an import in the background. The task owns `up` (with credentials)
-/// for its lifetime and updates the `imports` row as it goes. `image_prefix`, if
-/// set, restricts the copy to upstream repositories under that namespace.
-pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream, image_prefix: Option<String>) {
+/// for its lifetime and updates the `imports` row as it goes. `provider` selects
+/// how the catalog is enumerated; `namespace` is the DigitalOcean registry /
+/// GitHub owner (required for those) or an optional prefix filter for generic.
+pub fn spawn(
+    state: AppState,
+    id: String,
+    org: Org,
+    up: OrgUpstream,
+    provider: Provider,
+    namespace: Option<String>,
+) {
     let concurrency = state.config().import.concurrency.max(1);
     tokio::spawn(async move {
         tracing::info!(
@@ -68,7 +77,8 @@ pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream, image_prefi
             upstream = %up.url,
             org = %org.slug,
             concurrency,
-            prefix = image_prefix.as_deref().unwrap_or(""),
+            provider = ?provider,
+            namespace = namespace.as_deref().unwrap_or(""),
             "import started"
         );
         let ctx = Ctx {
@@ -76,7 +86,7 @@ pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream, image_prefi
             blob_sem: Semaphore::new(concurrency),
             inflight: StdMutex::new(HashMap::new()),
         };
-        let outcome = run(&state, &id, &org, &up, &ctx, image_prefix.as_deref()).await;
+        let outcome = run(&state, &id, &org, &up, &ctx, provider, namespace.as_deref()).await;
         match outcome {
             Ok(()) => {
                 tracing::info!(import = %id, "import completed");
@@ -100,14 +110,19 @@ async fn run(
     org: &Org,
     up: &OrgUpstream,
     ctx: &Ctx,
-    image_prefix: Option<&str>,
+    provider: Provider,
+    namespace: Option<&str>,
 ) -> Result<()> {
-    let mut repos = proxy::list_catalog(up).await?;
-    if let Some(prefix) = image_prefix {
-        // Keep only repositories under the requested namespace, so an import can
-        // target one account/registry-name on a shared host (e.g. DigitalOcean,
-        // where images live at `registry.digitalocean.com/<name>/<image>`).
-        repos.retain(|repo| repo_under_prefix(repo, prefix));
+    let repos = providers::enumerate_repos(provider, up, namespace).await?;
+    // A generic upstream that lists nothing almost always means it doesn't expose
+    // a usable `/v2/_catalog` (Docker Hub, GHCR, a multi-registry DOCR account) —
+    // fail loudly with guidance rather than silently "completing" at 0/0. For an
+    // API-backed provider an empty result is a genuinely empty namespace.
+    if repos.is_empty() && provider == Provider::Generic {
+        return Err(Error::bad_request(
+            "no repositories found — this registry may not expose a usable /v2/_catalog; \
+             pick a specific provider (DigitalOcean / GitHub) or check the host and credentials",
+        ));
     }
     db::imports::set_repos_total(state.db(), id, repos.len() as i64).await?;
 
@@ -278,7 +293,7 @@ async fn copy_blob_once(
 /// prefix, or it's a child path (`prefix/…`). A plain `starts_with` would wrongly
 /// match `my-registry-staging` against prefix `my-registry`, so we require a `/`
 /// boundary.
-fn repo_under_prefix(repo: &str, prefix: &str) -> bool {
+pub(crate) fn repo_under_prefix(repo: &str, prefix: &str) -> bool {
     repo == prefix
         || repo
             .strip_prefix(prefix)

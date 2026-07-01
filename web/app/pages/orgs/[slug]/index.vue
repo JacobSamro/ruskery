@@ -115,18 +115,41 @@ async function refreshRepos() {
 const orgs = ref<{ slug: string; name: string; role: string }[]>([]);
 const showImport = ref(false);
 const importOrg = ref("");
+const importProvider = ref("generic");
 const importHost = ref("");
 const importPrefix = ref("");
 const importUser = ref("");
 const importPass = ref("");
+const importNamespace = ref("");
+const importNamespaces = ref<{ name: string; repo_count: number | null }[]>([]);
+const discovering = ref(false);
+const discoverError = ref("");
 const importing = ref(false);
 const importError = ref("");
 
+// DigitalOcean uses a single API token for both fields; other providers use a
+// username + password/token pair.
+function importCreds(): { username?: string; password?: string } {
+  const password = importPass.value.trim();
+  const username =
+    importProvider.value === "digitalocean" ? password : importUser.value.trim();
+  return { username: username || undefined, password: password || undefined };
+}
+
+const canStartImport = computed(() => {
+  if (importProvider.value === "generic") return !!importHost.value.trim();
+  return !!importNamespace.value; // DO/GitHub require a picked namespace
+});
+
 async function openImport() {
+  importProvider.value = "generic";
   importHost.value = "";
   importPrefix.value = "";
   importUser.value = "";
   importPass.value = "";
+  importNamespace.value = "";
+  importNamespaces.value = [];
+  discoverError.value = "";
   importError.value = "";
   importOrg.value = slug.value;
   try {
@@ -143,18 +166,54 @@ function closeImport() {
   showImport.value = false;
 }
 
+// Switching provider invalidates any loaded namespace list.
+function onProviderChange() {
+  importNamespace.value = "";
+  importNamespaces.value = [];
+  discoverError.value = "";
+}
+
+// Load the provider's registries/owners into the dropdown from its API.
+async function discoverNamespaces() {
+  discoverError.value = "";
+  importNamespaces.value = [];
+  importNamespace.value = "";
+  const creds = importCreds();
+  if (!creds.password) {
+    discoverError.value = "Enter your token first.";
+    return;
+  }
+  discovering.value = true;
+  try {
+    const res = await api.post<{
+      namespaces: { name: string; repo_count: number | null }[];
+    }>(`/api/v1/orgs/${importOrg.value || slug.value}/imports/discover`, {
+      provider: importProvider.value,
+      ...creds,
+    });
+    importNamespaces.value = res.namespaces;
+    if (res.namespaces.length) importNamespace.value = res.namespaces[0]!.name;
+    else discoverError.value = "Nothing found for this token.";
+  } catch (e) {
+    discoverError.value = apiErrorMessage(e);
+  } finally {
+    discovering.value = false;
+  }
+}
+
 async function startImport() {
-  const host = importHost.value.trim();
   const target = importOrg.value || slug.value;
-  if (!host || importing.value) return;
+  if (importing.value || !canStartImport.value) return;
+  const isGeneric = importProvider.value === "generic";
   importing.value = true;
   importError.value = "";
   try {
     await api.post(`/api/v1/orgs/${target}/imports`, {
-      host,
-      image_prefix: importPrefix.value.trim() || undefined,
-      username: importUser.value.trim() || undefined,
-      password: importPass.value || undefined,
+      provider: importProvider.value,
+      host: isGeneric ? importHost.value.trim() : undefined,
+      image_prefix:
+        (isGeneric ? importPrefix.value.trim() : importNamespace.value) || undefined,
+      ...importCreds(),
     });
     closeImport();
     if (target !== slug.value) {
@@ -312,10 +371,22 @@ function importPct(i: ImportJob): number {
     <UiModal :open="showImport" title="Import from a registry" @close="closeImport">
       <form class="flex flex-col gap-4" @submit.prevent="startImport">
         <p class="text-sm text-muted-foreground">
-          Copies <strong>every repository, tag and architecture</strong> from an upstream OCI
-          registry that supports catalog listing (registry:2, Harbor, DigitalOcean, GHCR
-          Enterprise…). Runs in the background; blobs already present are skipped.
+          Copies <strong>every repository, tag and architecture</strong> from an upstream registry
+          into a target org. Runs in the background; blobs already present are skipped.
         </p>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium">Provider</label>
+          <select
+            v-model="importProvider"
+            data-testid="import-provider"
+            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            @change="onProviderChange"
+          >
+            <option value="generic">Generic (OCI catalog)</option>
+            <option value="digitalocean">DigitalOcean</option>
+            <option value="github">GitHub (GHCR)</option>
+          </select>
+        </div>
         <div>
           <label class="mb-1.5 block text-sm font-medium">Target organization</label>
           <select
@@ -328,36 +399,55 @@ function importPct(i: ImportJob): number {
             </option>
           </select>
         </div>
-        <div>
-          <label class="mb-1.5 block text-sm font-medium">Registry host</label>
+
+        <!-- generic: free-text host + optional prefix filter -->
+        <template v-if="importProvider === 'generic'">
+          <div>
+            <label class="mb-1.5 block text-sm font-medium">Registry host</label>
+            <UiInput
+              v-model="importHost"
+              placeholder="registry.example.com"
+              data-testid="import-host"
+            />
+            <p class="mt-1.5 text-xs text-muted-foreground">Host or URL (HTTPS assumed).</p>
+          </div>
+          <div>
+            <label class="mb-1.5 block text-sm font-medium">
+              Image prefix <span class="font-normal text-muted-foreground">(optional)</span>
+            </label>
+            <UiInput
+              v-model="importPrefix"
+              placeholder="team / namespace"
+              data-testid="import-prefix"
+            />
+            <p class="mt-1.5 text-xs text-muted-foreground">
+              Only import repositories under this namespace (matched on a
+              <code>/</code> boundary). Leave empty to import the whole catalog.
+            </p>
+          </div>
+        </template>
+
+        <!-- credentials -->
+        <div v-if="importProvider === 'digitalocean'">
+          <label class="mb-1.5 block text-sm font-medium">API token</label>
           <UiInput
-            v-model="importHost"
-            placeholder="registry.digitalocean.com"
-            data-testid="import-host"
-          />
-          <p class="mt-1.5 text-xs text-muted-foreground">Host or URL (HTTPS assumed).</p>
-        </div>
-        <div>
-          <label class="mb-1.5 block text-sm font-medium">
-            Image prefix <span class="font-normal text-muted-foreground">(optional)</span>
-          </label>
-          <UiInput
-            v-model="importPrefix"
-            placeholder="your-username / registry-name"
-            data-testid="import-prefix"
+            v-model="importPass"
+            type="password"
+            placeholder="dop_v1_…"
+            data-testid="import-pass"
           />
           <p class="mt-1.5 text-xs text-muted-foreground">
-            Only import repositories under this namespace — images are
-            <code>registry/prefix/image</code>. For most providers the prefix is your username or
-            registry name (e.g. the <code>myuser</code> in
-            <code>registry.example.com/myuser/image</code>). Leave empty to import everything, or
-            when your registry gives you a dedicated domain.
+            Your DigitalOcean API token (used as both username and password).
           </p>
         </div>
-        <div class="grid grid-cols-2 gap-3">
+        <div v-else class="grid grid-cols-2 gap-3">
           <div>
             <label class="mb-1.5 block text-sm font-medium">Username</label>
-            <UiInput v-model="importUser" placeholder="token / user" data-testid="import-user" />
+            <UiInput
+              v-model="importUser"
+              :placeholder="importProvider === 'github' ? 'github-user' : 'token / user'"
+              data-testid="import-user"
+            />
           </div>
           <div>
             <label class="mb-1.5 block text-sm font-medium">Password / token</label>
@@ -369,15 +459,52 @@ function importPct(i: ImportJob): number {
             />
           </div>
         </div>
-        <p class="text-xs text-muted-foreground">
-          For DigitalOcean, use your API token as both the username and the password.
+        <p v-if="importProvider === 'github'" class="text-xs text-muted-foreground">
+          GitHub username + a personal access token with the <code>read:packages</code> scope.
         </p>
+
+        <!-- API-backed providers: pick a namespace loaded from their API -->
+        <div v-if="importProvider !== 'generic'">
+          <label class="mb-1.5 block text-sm font-medium">
+            {{ importProvider === "digitalocean" ? "Registry" : "Owner" }}
+          </label>
+          <div class="flex gap-2">
+            <select
+              v-model="importNamespace"
+              data-testid="import-namespace"
+              :disabled="!importNamespaces.length"
+              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
+              <option value="" disabled>
+                {{ importNamespaces.length ? "Select…" : "Load to choose…" }}
+              </option>
+              <option v-for="n in importNamespaces" :key="n.name" :value="n.name">
+                {{ n.name }}<template v-if="n.repo_count != null"> ({{ n.repo_count }} repos)</template>
+              </option>
+            </select>
+            <UiButton
+              type="button"
+              variant="secondary"
+              :disabled="discovering"
+              data-testid="import-discover"
+              @click="discoverNamespaces"
+            >
+              {{ discovering ? "Loading…" : "Load" }}
+            </UiButton>
+          </div>
+          <p v-if="discoverError" class="mt-1.5 text-xs text-destructive">{{ discoverError }}</p>
+          <p v-else class="mt-1.5 text-xs text-muted-foreground">
+            Enter your token, then <strong>Load</strong> to list your
+            {{ importProvider === "digitalocean" ? "registries" : "owners" }}.
+          </p>
+        </div>
+
         <p v-if="importError" class="text-sm text-destructive">{{ importError }}</p>
         <div class="flex justify-end gap-2">
           <UiButton type="button" variant="ghost" @click="closeImport">Cancel</UiButton>
           <UiButton
             type="submit"
-            :disabled="importing || !importHost.trim()"
+            :disabled="importing || !canStartImport"
             data-testid="import-submit"
           >
             {{ importing ? "Starting…" : "Start import" }}
