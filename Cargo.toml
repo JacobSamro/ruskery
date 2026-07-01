@@ -48,7 +48,10 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros"
 
 # Auth + crypto
 argon2 = "0.5"
-jsonwebtoken = "9"
+# v10 requires an explicit crypto backend; `rust_crypto` is pure-Rust (HMAC for
+# our HS256 tokens) — no rustls CryptoProvider and no C deps, so the static musl
+# build stays clean. (default `use_pem` dropped: we sign with a raw secret.)
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
@@ -83,7 +86,7 @@ governor = "0.8"
 arc-swap = "1"
 
 # Bounded in-memory LRU for the manifest read cache (pull hot path)
-lru = "0.12"
+lru = "0.16"
 
 # Google OAuth (token exchange + userinfo over HTTPS) and the pull-through
 # cache fetching manifests/blobs from an upstream registry (streamed).

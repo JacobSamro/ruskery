@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency bumps to clear Dependabot advisories.** `lru` 0.12 → 0.16 (an
+  `IterMut` unsoundness we never exercised — we only iterate immutably) and
+  `jsonwebtoken` 9 → 10 (a type-confusion advisory that our HS256, server-secret
+  tokens with a required `exp` claim aren't affected by). v10 needs an explicit
+  crypto backend; we use the pure-Rust `rust_crypto` feature so the static musl
+  build stays C-free. The remaining `rustls-webpki` advisory is a transitive
+  dep of the AWS SDK (old `rustls 0.21`) with no reachable CRL/name-constraint
+  path here; it can't be bumped independently and is not applicable.
+
 ## [0.5.0] - 2026-07-01
 
 ### Added
