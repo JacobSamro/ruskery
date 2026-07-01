@@ -154,8 +154,11 @@ function closeCreate() {
           </UiButton>
         </div>
         <div class="rounded-[var(--radius)] border border-border bg-background px-3 py-2 font-mono text-xs text-muted-foreground">
-          docker login &lt;host&gt; -u {{ me?.user.username }} -p {{ created }}
+          echo &lt;token&gt; | docker login &lt;host&gt; -u {{ me?.user.username }} --password-stdin
         </div>
+        <p class="text-xs text-muted-foreground">
+          Piping the token via <span class="font-mono">--password-stdin</span> keeps it out of your shell history and process list.
+        </p>
         <div class="flex justify-end">
           <UiButton @click="closeCreate">Done</UiButton>
         </div>
