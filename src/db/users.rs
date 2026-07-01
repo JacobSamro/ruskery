@@ -44,6 +44,47 @@ pub async fn find_by_login(db: &Db, login: &str) -> Result<Option<User>> {
 }
 
 /// Create a user. `password_hash` must already be an Argon2id PHC string.
+/// Create the very first (super-admin) user, but only if no user exists yet.
+/// Returns `None` if someone else already completed setup.
+///
+/// The insert is guarded by `WHERE (SELECT COUNT(*) FROM users) = 0` in the same
+/// statement, so it's atomic against a concurrent first-run request: SQLite
+/// serializes writers, so at most one such insert can affect a row — the loser
+/// inserts zero rows and gets `None`. This closes the check-then-create race
+/// where two racing setup requests could both create super-admins.
+pub async fn create_first_admin(
+    db: &Db,
+    email: &str,
+    username: &str,
+    password_hash: &str,
+) -> Result<Option<User>> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = now_rfc3339();
+    let res = sqlx::query(
+        "INSERT INTO users (id, email, username, password_hash, is_admin, created_at)
+         SELECT ?, ?, ?, ?, 1, ?
+         WHERE (SELECT COUNT(*) FROM users) = 0",
+    )
+    .bind(&id)
+    .bind(email)
+    .bind(username)
+    .bind(password_hash)
+    .bind(&now)
+    .execute(db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(Some(User {
+        id,
+        email: email.into(),
+        username: username.into(),
+        password_hash: password_hash.into(),
+        is_admin: true,
+        created_at: now,
+    }))
+}
+
 pub async fn create(
     db: &Db,
     email: &str,

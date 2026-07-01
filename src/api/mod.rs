@@ -164,7 +164,14 @@ async fn setup(State(state): State<AppState>, Json(req): Json<SetupReq>) -> Resu
         return Err(Error::bad_request("password must be at least 8 characters"));
     }
     let hash = password::hash_password(&req.password)?;
-    let user = db::users::create(state.db(), &req.email, &req.username, &hash, true).await?;
+    // Atomic guarded insert: only the first of any racing first-run requests
+    // creates the super-admin; the rest see `None` and get a conflict, so
+    // concurrent setup can't mint multiple instance admins.
+    let Some(user) = db::users::create_first_admin(state.db(), &req.email, &req.username, &hash)
+        .await?
+    else {
+        return Err(Error::conflict("setup already completed"));
+    };
     let org = db::orgs::create_org(state.db(), &req.org_slug, &req.org_name).await?;
     db::orgs::add_org_member(state.db(), &org.id, &user.id, OrgRole::Owner).await?;
     db::settings::set(state.db(), "setup_complete", "1")
