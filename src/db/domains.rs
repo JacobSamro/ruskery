@@ -35,11 +35,20 @@ pub async fn allowlist(db: &Db) -> Result<Vec<String>> {
 }
 
 pub async fn add(db: &Db, domain: &str) -> Result<()> {
+    // The first domain added becomes primary automatically, so the instance has
+    // a public host to advertise (registry realm/audience) without a manual
+    // `set-primary` step. Later additions default to non-primary.
+    let has_primary: bool =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM domains WHERE is_primary = 1)")
+            .fetch_one(db)
+            .await?
+            != 0;
     sqlx::query(
-        "INSERT INTO domains (domain, status, is_primary, created_at) VALUES (?, 'pending', 0, ?)
+        "INSERT INTO domains (domain, status, is_primary, created_at) VALUES (?, 'pending', ?, ?)
          ON CONFLICT(domain) DO NOTHING",
     )
     .bind(domain)
+    .bind(i64::from(!has_primary))
     .bind(now_rfc3339())
     .execute(db)
     .await?;
@@ -47,11 +56,38 @@ pub async fn add(db: &Db, domain: &str) -> Result<()> {
 }
 
 pub async fn delete(db: &Db, domain: &str) -> Result<()> {
+    let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM domains WHERE domain = ?")
         .bind(domain)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
+    // If we just removed the primary, promote the oldest remaining domain so the
+    // instance keeps advertising a valid public host.
+    let has_primary: bool =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM domains WHERE is_primary = 1)")
+            .fetch_one(&mut *tx)
+            .await?
+            != 0;
+    if !has_primary {
+        sqlx::query(
+            "UPDATE domains SET is_primary = 1
+             WHERE domain = (SELECT domain FROM domains ORDER BY created_at LIMIT 1)",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
+}
+
+/// The domain to advertise as the instance's public host: the primary if one is
+/// marked, else the oldest-added. `None` when no domains exist (IP-only phase).
+pub async fn primary(db: &Db) -> Result<Option<String>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT domain FROM domains ORDER BY is_primary DESC, created_at LIMIT 1")
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|r| r.0))
 }
 
 pub async fn set_primary(db: &Db, domain: &str) -> Result<()> {

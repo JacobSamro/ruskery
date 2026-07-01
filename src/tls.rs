@@ -33,9 +33,11 @@ pub async fn serve(state: AppState, app: Router) -> anyhow::Result<()> {
 
     let http_addr = state.config().server.http_addr.clone();
     let https_addr = state.config().server.https_addr.clone();
-    let public_url = state.config().server.public_url.clone();
 
     loop {
+        // Re-read each iteration: the effective public URL tracks the primary
+        // domain, which can change while we're serving.
+        let public_url = (*state.public_url()).clone();
         let domains = db::domains::allowlist(state.db()).await.unwrap_or_default();
         if domains.is_empty() {
             // Automatic TLS is on but there's no domain to certify yet. Serve the

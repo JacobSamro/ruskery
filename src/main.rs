@@ -178,6 +178,10 @@ async fn main() -> anyhow::Result<()> {
             let analytics_enabled = config.analytics.enabled;
             let rollup_secs = config.analytics.rollup_secs;
             let state = state::AppState::new(config, pool, storage, secret_key);
+            // Derive the effective public URL from config or the primary domain
+            // before serving, so the registry realm/audience is correct on the
+            // first request (no restart needed after a domain is later added).
+            state.refresh_public_url().await;
             let app = server::router(state.clone());
 
             tokio::spawn(gc::background(state.clone(), gc_interval));

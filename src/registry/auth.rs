@@ -10,10 +10,11 @@ use crate::auth::{parse_bearer, token};
 use crate::state::AppState;
 
 /// Derive the externally-visible base URL (scheme://host) for building the realm.
-/// Prefers the configured `public_url`; otherwise reconstructs it from request
-/// headers (honoring `X-Forwarded-Proto` when behind a proxy).
+/// Prefers the effective `public_url` (explicit config, else the primary custom
+/// domain); otherwise reconstructs it from request headers (honoring
+/// `X-Forwarded-Proto` when behind a proxy) during the IP-only bootstrap phase.
 pub fn base_url(state: &AppState, headers: &HeaderMap) -> String {
-    let configured = &state.config().server.public_url;
+    let configured = state.public_url();
     if !configured.is_empty() {
         return configured.trim_end_matches('/').to_string();
     }

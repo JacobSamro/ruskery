@@ -1221,6 +1221,7 @@ async fn add_domain(
     )
     .await
     .ok();
+    state.refresh_public_url().await;
     state.notify_domains_changed();
     Ok(json_ok(json!({ "ok": true })))
 }
@@ -1244,6 +1245,7 @@ async fn delete_domain(
     )
     .await
     .ok();
+    state.refresh_public_url().await;
     state.notify_domains_changed();
     Ok(json_ok(json!({ "ok": true })))
 }
@@ -1257,5 +1259,6 @@ async fn set_primary_domain(
         return Err(Error::Forbidden);
     }
     db::domains::set_primary(state.db(), &domain).await?;
+    state.refresh_public_url().await;
     Ok(json_ok(json!({ "ok": true })))
 }

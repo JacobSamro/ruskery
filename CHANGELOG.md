@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Registry realm/audience now follows the configured domain automatically.**
+  When `server.public_url` was unset and the registry sat behind a reverse proxy
+  that forwarded `Host: localhost`, the Bearer challenge advertised
+  `realm="http://localhost/v2/token"` and tokens were minted with
+  `aud=localhost` — so a `docker push`/`pull` client could never fetch a usable
+  token and every authenticated request failed with `401` (e.g. "unexpected
+  status from HEAD request … 401"). The effective public URL is now derived from
+  the **primary custom domain** whenever `public_url` isn't explicitly set,
+  cached and recomputed at startup and on every domain add/remove/set-primary
+  (no restart). The first domain added becomes primary automatically, and
+  removing the primary promotes the oldest remaining domain, so adding a domain
+  in the dashboard is enough to make `docker push <domain>/…` work. Explicit
+  `public_url` config still wins; with no domain configured the request `Host`
+  header is still used (IP-only bootstrap).
+
 ### Security
 
 - **Dependency bumps to clear Dependabot advisories.** `lru` 0.12 → 0.16 (an

@@ -850,6 +850,30 @@ async fn end_to_end() {
         .unwrap();
     assert_eq!(domains["domains"][0]["domain"], "registry.example.com");
     assert_eq!(domains["domains"][0]["status"], "pending");
+    // The first domain added auto-becomes primary, so the registry immediately
+    // advertises it as the public host in the Bearer challenge (realm + service
+    // = audience) — no restart and no manual set-primary. This is precisely what
+    // makes `docker push <domain>/...` obtain a usable token.
+    assert_eq!(
+        domains["domains"][0]["is_primary"], true,
+        "first domain must auto-become primary"
+    );
+    let www = reg
+        .get(format!("{base}/v2/"))
+        .send()
+        .await
+        .unwrap()
+        .headers()
+        .get("www-authenticate")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        www.contains("realm=\"https://registry.example.com/v2/token\"")
+            && www.contains("service=\"registry.example.com\""),
+        "challenge must advertise the primary domain, got: {www}"
+    );
 
     let domains2: serde_json::Value = dash
         .get(format!("{base}/api/v1/domains"))
@@ -860,6 +884,31 @@ async fn end_to_end() {
         .await
         .unwrap();
     assert_eq!(domains2["contact_email"], "ops@example.com");
+
+    // Remove the domain again so the remainder of the suite — which drives the
+    // registry over 127.0.0.1 — sees the header-derived realm. Also covers the
+    // delete path and confirms the advertised host reverts.
+    let del = dash
+        .delete(format!("{base}/api/v1/domains/registry.example.com"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 200);
+    let www_after = reg
+        .get(format!("{base}/v2/"))
+        .send()
+        .await
+        .unwrap()
+        .headers()
+        .get("www-authenticate")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        !www_after.contains("registry.example.com"),
+        "removing the only domain must revert the realm to the request host, got: {www_after}"
+    );
 
     // ── audit log records the push ────────────────────────────────────
     let audit: serde_json::Value = dash
