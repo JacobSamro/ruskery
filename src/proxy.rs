@@ -77,9 +77,9 @@ enum Auth<'a> {
 /// GET a URL, following redirects manually and DNS-guarding **every** hop so an
 /// upstream can't redirect us onto a link-local/metadata address — even via a
 /// hostname that resolves there (which the synchronous reqwest redirect policy
-/// can't catch). Credentials are attached to the first request and to same-host
-/// redirects only (matching reqwest's cross-host header-stripping); a presigned
-/// CDN target, the usual redirect, needs none.
+/// can't catch). Credentials are attached to the first request and to same-origin
+/// redirects only (so a cross-host or scheme/port-downgraded hop drops them); a
+/// presigned CDN target, the usual redirect, needs none.
 async fn send_get(url: &str, accept: Option<&str>, auth: Auth<'_>) -> Result<reqwest::Response> {
     // Credentials are kept across a redirect only to the *same origin* (scheme +
     // host + port). Matching on host alone would let a trusted HTTPS realm
