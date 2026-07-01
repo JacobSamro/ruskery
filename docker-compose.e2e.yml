@@ -1,17 +1,17 @@
 # Server side for the cross-platform `docker push/pull` e2e (Linux + macOS).
-# ruskery + MinIO run as containers; the host docker CLI logs in and pushes to
+# ruskery + RustFS run as containers; the host docker CLI logs in and pushes to
 # the published ruskery port. The storage endpoint is `host.docker.internal` so
 # the presigned pull URL that ruskery hands back is reachable by the docker
 # daemon (on Linux the runner adds host.docker.internal -> 127.0.0.1 to /etc/hosts).
 services:
-  minio:
-    image: minio/minio
-    command: server /data --address :9000
+  rustfs:
+    image: rustfs/rustfs:latest
     ports:
       - "9000:9000"
     environment:
-      MINIO_ROOT_USER: ruskery
-      MINIO_ROOT_PASSWORD: ruskerysecret
+      RUSTFS_ACCESS_KEY: ruskery
+      RUSTFS_SECRET_KEY: ruskerysecret
+      RUSTFS_ADDRESS: 0.0.0.0:9000
 
   ruskery:
     # Linux builds from source (RUSKERY_IMAGE unset -> the local tag, built with
@@ -21,7 +21,7 @@ services:
     image: ${RUSKERY_IMAGE:-ruskery:e2e}
     build: .
     depends_on:
-      - minio
+      - rustfs
     ports:
       - "5000:80"
     extra_hosts:

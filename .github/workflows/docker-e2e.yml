@@ -16,7 +16,7 @@ on:
     tags: ["v*"]
 
 jobs:
-  # ── Linux + macOS(Intel): ruskery & MinIO as containers, push from host CLI ──
+  # ── Linux + macOS(Intel): ruskery & RustFS as containers, push from host CLI ──
   compose:
     name: docker push/pull (${{ matrix.os }})
     strategy:
@@ -58,16 +58,16 @@ jobs:
         run: echo "RUSKERY_IMAGE=ghcr.io/jacobsamro/ruskery:latest" >> "$GITHUB_ENV"
 
       # On Linux the native daemon needs to resolve the presigned-URL host to the
-      # published MinIO port; on macOS Colima provides host.docker.internal in-VM.
+      # published RustFS port; on macOS Colima provides host.docker.internal in-VM.
       - name: Map host.docker.internal (Linux)
         if: runner.os == 'Linux'
         run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
 
-      - name: Build & start ruskery + MinIO (Linux)
+      - name: Build & start ruskery + RustFS (Linux)
         if: runner.os == 'Linux'
         run: docker compose -f docker-compose.e2e.yml up -d --build
 
-      - name: Pull & start ruskery + MinIO (macOS)
+      - name: Pull & start ruskery + RustFS (macOS)
         if: runner.os == 'macOS'
         run: |
           docker pull "$RUSKERY_IMAGE"
@@ -79,7 +79,7 @@ jobs:
             if aws --endpoint-url http://localhost:9000 s3 mb s3://ruskery 2>/dev/null; then
               echo "bucket created"; break
             fi
-            echo "waiting for minio..."; sleep 2
+            echo "waiting for rustfs..."; sleep 2
           done
 
       - name: Wait for ruskery
@@ -116,6 +116,10 @@ jobs:
         run: docker compose -f docker-compose.e2e.yml logs --no-color || true
 
   # ── Windows: native ruskery.exe + native MinIO + a Windows container image ──
+  # This leg keeps MinIO (not RustFS, used by the Linux/macOS legs): RustFS ships
+  # only as a Linux container image with no native Windows binary, and the Windows
+  # daemon here runs Windows containers, so a native windows-amd64 S3 server is the
+  # only option. It's just the e2e storage backend — ruskery is storage-agnostic.
   windows:
     name: docker push/pull (windows-latest)
     runs-on: windows-latest
