@@ -6,6 +6,7 @@
 //! lives in memory (single process); a restart simply asks the client to retry.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aws_sdk_s3::types::CompletedPart;
 use axum::body::Body;
@@ -23,6 +24,15 @@ use crate::storage::Storage;
 
 /// S3 multipart part size. Parts (except the last) must be ≥ 5 MiB.
 const PART_SIZE: usize = 8 * 1024 * 1024;
+
+/// How long an upload session may sit idle before the reaper aborts it (and its
+/// S3 multipart) — bounds the leak from clients that start a push and vanish.
+const SESSION_IDLE_TTL: Duration = Duration::from_secs(3600);
+/// How often the reaper sweeps for idle sessions.
+const REAP_INTERVAL: Duration = Duration::from_secs(300);
+/// Backstop cap on concurrent in-memory sessions, so a push principal can't
+/// allocate unbounded sessions faster than the idle reaper reclaims them.
+const MAX_ACTIVE_SESSIONS: usize = 5_000;
 
 /// In-memory map of active upload sessions.
 #[derive(Clone, Default)]
@@ -45,6 +55,54 @@ impl UploadRegistry {
 
     fn remove(&self, id: &str) {
         self.inner.remove(id);
+    }
+
+    /// Number of live sessions (for the start-time backstop cap).
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Remove and return sessions idle longer than `ttl` so the caller can abort
+    /// their multipart uploads. A session that is locked (in-flight op) or
+    /// finalizing is left for next sweep. Shard refs are dropped before removal
+    /// to avoid deadlocking against the DashMap.
+    fn take_expired(&self, ttl: Duration) -> Vec<Arc<Mutex<UploadSession>>> {
+        let now = Instant::now();
+        let ids: Vec<String> = self.inner.iter().map(|e| e.key().clone()).collect();
+        let mut expired = Vec::new();
+        for id in ids {
+            let Some(entry) = self.inner.get(&id) else {
+                continue;
+            };
+            let session = entry.value().clone();
+            drop(entry);
+            let should_reap = match session.try_lock() {
+                Ok(guard) => now.duration_since(guard.last_activity) >= ttl && !guard.finalizing,
+                Err(_) => false, // locked = an op is in flight; try next sweep
+            };
+            if should_reap {
+                self.inner.remove(&id);
+                expired.push(session);
+            }
+        }
+        expired
+    }
+}
+
+/// Background loop: periodically abort upload sessions that have gone idle,
+/// releasing their S3 multipart uploads. Spawned once at startup.
+pub async fn reap_loop(state: AppState) {
+    loop {
+        tokio::time::sleep(REAP_INTERVAL).await;
+        for session in state.uploads().take_expired(SESSION_IDLE_TTL) {
+            let s = session.lock().await;
+            let _ = s.storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+            tracing::warn!(
+                org = %s.org_id,
+                "aborted an upload session idle over {}s",
+                SESSION_IDLE_TTL.as_secs()
+            );
+        }
     }
 }
 
@@ -69,11 +127,15 @@ pub struct UploadSession {
     /// upload so a mid-flight settings hot-swap can't split a multipart upload
     /// across two different endpoints/buckets.
     pub storage: Arc<Storage>,
+    /// Last time this session saw activity; the reaper aborts sessions idle
+    /// beyond [`SESSION_IDLE_TTL`].
+    pub last_activity: Instant,
 }
 
 impl UploadSession {
     /// Append bytes, flushing full multipart parts to storage as they fill.
     async fn write(&mut self, chunk: &[u8]) -> Result<()> {
+        self.last_activity = Instant::now();
         self.hasher.update(chunk);
         self.total += chunk.len() as u64;
         self.buffer.extend_from_slice(chunk);
@@ -145,6 +207,22 @@ pub async fn start(
         // Mount miss → fall through to a normal upload session (per spec).
     }
 
+    // Backstop against unbounded session accumulation: reclaim idle sessions
+    // first, then refuse if we're still at the cap (retryable).
+    if state.uploads().len() >= MAX_ACTIVE_SESSIONS {
+        for session in state.uploads().take_expired(SESSION_IDLE_TTL) {
+            let s = session.lock().await;
+            let _ = s.storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+        }
+        if state.uploads().len() >= MAX_ACTIVE_SESSIONS {
+            return Err(Error::oci(
+                StatusCode::TOO_MANY_REQUESTS,
+                "TOOMANYREQUESTS",
+                "too many concurrent uploads; retry shortly",
+            ));
+        }
+    }
+
     let upload_id = uuid::Uuid::new_v4().to_string();
     let temp_key = Storage::upload_key(org_id, &upload_id);
     let storage = state.storage();
@@ -164,6 +242,7 @@ pub async fn start(
             total: 0,
             finalizing: false,
             storage,
+            last_activity: Instant::now(),
         },
     );
 

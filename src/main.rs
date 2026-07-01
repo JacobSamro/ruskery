@@ -189,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             let app = server::router(state.clone());
 
             tokio::spawn(gc::background(state.clone(), gc_interval));
+            tokio::spawn(registry::uploads::reap_loop(state.clone()));
 
             if analytics_enabled {
                 tokio::spawn(analytics::flush_loop(state.clone(), rollup_secs));
