@@ -29,7 +29,7 @@ watch(slug, load);
     <div class="mb-6 flex items-end justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Repositories</h1>
-        <p class="text-sm text-[var(--color-muted)]">Container images in this organization.</p>
+        <p class="text-sm text-muted-foreground">Container images in this organization.</p>
       </div>
       <div v-if="stats" class="flex gap-2">
         <UiBadge>{{ stats.repos }} repos</UiBadge>
@@ -39,20 +39,20 @@ watch(slug, load);
     </div>
 
     <UiCard>
-      <div v-if="loading" class="py-8 text-center text-sm text-[var(--color-muted)]">Loading…</div>
+      <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">Loading…</div>
       <div v-else-if="!repos.length" class="flex flex-col items-center gap-3 py-12 text-center">
-        <UiIcon name="package" :size="32" class="text-[var(--color-muted)]" />
+        <UiIcon name="package" :size="32" class="text-muted-foreground" />
         <div>
           <p class="font-medium">No repositories yet</p>
-          <p class="mt-1 text-sm text-[var(--color-muted)]">
+          <p class="mt-1 text-sm text-muted-foreground">
             Push your first image:
-            <code class="text-[var(--color-fg)]">docker push &lt;host&gt;/{{ slug }}/app:latest</code>
+            <code class="text-foreground">docker push &lt;host&gt;/{{ slug }}/app:latest</code>
           </p>
         </div>
       </div>
       <table v-else class="w-full text-sm">
-        <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
-          <tr class="border-b border-[var(--color-border)]">
+        <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <tr class="border-b border-border">
             <th class="px-3 py-2 font-medium">Repository</th>
             <th class="px-3 py-2 font-medium">Tags</th>
             <th class="px-3 py-2 font-medium">Updated</th>
@@ -62,19 +62,19 @@ watch(slug, load);
           <tr
             v-for="r in repos"
             :key="r.name"
-            class="border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-bg)]"
+            class="border-b border-border last:border-0 hover:bg-muted/50"
           >
             <td class="px-3 py-3">
               <NuxtLink
                 :to="`/orgs/${slug}/repos/${r.name}`"
-                class="flex items-center gap-2 font-medium hover:text-[var(--color-primary)]"
+                class="flex items-center gap-2 font-medium hover:text-primary"
               >
-                <UiIcon name="boxes" :size="16" class="text-[var(--color-muted)]" />
+                <UiIcon name="boxes" :size="16" class="text-muted-foreground" />
                 {{ r.name }}
               </NuxtLink>
             </td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ r.tag_count }}</td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ timeAgo(r.updated_at) }}</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ r.tag_count }}</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ timeAgo(r.updated_at) }}</td>
           </tr>
         </tbody>
       </table>

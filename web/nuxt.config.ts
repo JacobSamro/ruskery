@@ -4,11 +4,22 @@ export default defineNuxtConfig({
   compatibilityDate: "2025-01-01",
   ssr: false,
   devtools: { enabled: false },
+  modules: ["@nuxtjs/color-mode"],
   css: ["~/assets/css/main.css"],
   postcss: {
     plugins: {
       "@tailwindcss/postcss": {},
     },
+  },
+  // shadcn-vue theming: toggle the `dark`/`light` class on <html> (no suffix),
+  // default to the OS preference, fall back to dark. The module injects a
+  // no-flash init script into index.html; the server's per-HTML CSP hashes it
+  // at serve time, so it stays inside the strict script-src.
+  colorMode: {
+    classSuffix: "",
+    preference: "system",
+    fallback: "dark",
+    storageKey: "ruskery-theme",
   },
   app: {
     head: {
@@ -18,7 +29,6 @@ export default defineNuxtConfig({
         { name: "viewport", content: "width=device-width, initial-scale=1" },
         { name: "description", content: "A fast, private container registry." },
       ],
-      htmlAttrs: { class: "dark" },
     },
   },
   // Dev proxy so `nuxt dev` talks to a running ruskery server.

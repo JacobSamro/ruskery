@@ -43,7 +43,7 @@ async function submit() {
 <template>
   <div class="w-full max-w-md">
     <div class="mb-6 flex items-center justify-center gap-2">
-      <div class="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--color-primary)] text-[var(--color-primary-fg)]">
+      <div class="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
         <UiIcon name="grid" :size="20" />
       </div>
       <span class="text-2xl font-semibold tracking-tight">ruskery</span>
@@ -74,8 +74,8 @@ async function submit() {
             <UiInput v-model="form.org_slug" placeholder="acme" required data-testid="setup-org-slug" />
           </div>
         </div>
-        <p class="text-xs text-[var(--color-muted)]">
-          Images will live under <code class="text-[var(--color-fg)]">{{ form.org_slug || "acme" }}/&lt;repo&gt;</code>.
+        <p class="text-xs text-muted-foreground">
+          Images will live under <code class="text-foreground">{{ form.org_slug || "acme" }}/&lt;repo&gt;</code>.
         </p>
         <p v-if="error" class="text-sm text-red-400">{{ error }}</p>
         <UiButton type="submit" :disabled="busy">{{ busy ? "Creating…" : "Create & continue" }}</UiButton>

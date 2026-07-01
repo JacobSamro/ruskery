@@ -56,7 +56,7 @@ async function remove() {
   <div>
     <div class="mb-6 flex items-center justify-between">
       <div>
-        <NuxtLink :to="`/orgs/${slug}`" class="text-sm text-[var(--color-muted)] hover:text-[var(--color-fg)]">
+        <NuxtLink :to="`/orgs/${slug}`" class="text-sm text-muted-foreground hover:text-foreground">
           ← Repositories
         </NuxtLink>
         <h1 class="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
@@ -69,17 +69,17 @@ async function remove() {
     </div>
 
     <UiCard v-if="repo" title="Pull this image">
-      <div class="flex items-center justify-between rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-sm">
+      <div class="flex items-center justify-between rounded-[var(--radius)] border border-border bg-background px-3 py-2 font-mono text-sm">
         <span>docker pull {{ repo.pull_prefix }}:&lt;tag&gt;</span>
       </div>
     </UiCard>
 
     <UiCard class="mt-6" title="Tags">
-      <div v-if="loading" class="py-8 text-center text-sm text-[var(--color-muted)]">Loading…</div>
-      <div v-else-if="!repo?.tags.length" class="py-8 text-center text-sm text-[var(--color-muted)]">No tags.</div>
+      <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+      <div v-else-if="!repo?.tags.length" class="py-8 text-center text-sm text-muted-foreground">No tags.</div>
       <table v-else class="w-full text-sm">
-        <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
-          <tr class="border-b border-[var(--color-border)]">
+        <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <tr class="border-b border-border">
             <th class="px-3 py-2 font-medium">Tag</th>
             <th class="px-3 py-2 font-medium">Digest</th>
             <th class="px-3 py-2 font-medium">Size</th>
@@ -88,11 +88,11 @@ async function remove() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in repo.tags" :key="t.tag" class="border-b border-[var(--color-border)] last:border-0">
+          <tr v-for="t in repo.tags" :key="t.tag" class="border-b border-border last:border-0">
             <td class="px-3 py-3"><UiBadge variant="primary">{{ t.tag }}</UiBadge></td>
-            <td class="px-3 py-3 font-mono text-xs text-[var(--color-muted)]">{{ shortDigest(t.digest) }}</td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ formatBytes(t.size) }}</td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ timeAgo(t.updated_at) }}</td>
+            <td class="px-3 py-3 font-mono text-xs text-muted-foreground">{{ shortDigest(t.digest) }}</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ formatBytes(t.size) }}</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ timeAgo(t.updated_at) }}</td>
             <td class="px-3 py-3 text-right">
               <UiButton variant="ghost" size="sm" @click="copy(t.tag)">
                 <UiIcon :name="copied === t.tag ? 'check' : 'copy'" :size="14" />

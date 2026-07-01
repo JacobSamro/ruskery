@@ -49,11 +49,11 @@ const empty = computed(() => props.series.every((s) => s.values.every((v) => v =
 <template>
   <div>
     <div class="mb-2 flex flex-wrap gap-3 text-xs">
-      <span v-for="s in series" :key="s.name" class="flex items-center gap-1.5 text-[var(--color-muted)]">
+      <span v-for="s in series" :key="s.name" class="flex items-center gap-1.5 text-muted-foreground">
         <span class="inline-block h-2 w-2 rounded-full" :style="{ background: s.color }" />
         {{ s.name }}
       </span>
-      <span class="ml-auto text-[var(--color-muted)]">peak {{ fmt(max) }}</span>
+      <span class="ml-auto text-muted-foreground">peak {{ fmt(max) }}</span>
     </div>
     <svg
       :viewBox="`0 0 ${W} ${height}`"
@@ -81,7 +81,7 @@ const empty = computed(() => props.series.every((s) => s.values.every((v) => v =
         />
       </template>
     </svg>
-    <p v-if="empty" class="mt-1 text-center text-xs text-[var(--color-muted)]">
+    <p v-if="empty" class="mt-1 text-center text-xs text-muted-foreground">
       No data in this range yet.
     </p>
   </div>

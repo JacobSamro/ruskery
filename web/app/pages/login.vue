@@ -41,7 +41,7 @@ async function submit() {
 <template>
   <div class="w-full max-w-sm">
     <div class="mb-6 flex items-center justify-center gap-2">
-      <div class="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--color-primary)] text-[var(--color-primary-fg)]">
+      <div class="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
         <UiIcon name="grid" :size="20" />
       </div>
       <span class="text-2xl font-semibold tracking-tight">ruskery</span>
@@ -61,8 +61,8 @@ async function submit() {
       </form>
 
       <template v-if="googleEnabled">
-        <div class="my-4 flex items-center gap-3 text-xs text-[var(--color-muted)]">
-          <span class="h-px flex-1 bg-[var(--color-border)]" /> or <span class="h-px flex-1 bg-[var(--color-border)]" />
+        <div class="my-4 flex items-center gap-3 text-xs text-muted-foreground">
+          <span class="h-px flex-1 bg-border" /> or <span class="h-px flex-1 bg-border" />
         </div>
         <UiButton variant="outline" class="w-full" @click="googleSignIn">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">

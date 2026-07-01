@@ -70,7 +70,7 @@ onMounted(() => {
     <div class="mb-6 flex items-center justify-between">
       <div>
         <h1 class="text-xl font-semibold tracking-tight">Organizations</h1>
-        <p class="text-sm text-[var(--color-muted)]">
+        <p class="text-sm text-muted-foreground">
           Every organization on this instance.
         </p>
       </div>
@@ -98,16 +98,16 @@ onMounted(() => {
     </UiCard>
 
     <UiCard>
-      <div v-if="loading" class="py-8 text-center text-sm text-[var(--color-muted)]">
+      <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">
         Loading…
       </div>
       <div
         v-else-if="!orgs.length"
-        class="py-8 text-center text-sm text-[var(--color-muted)]"
+        class="py-8 text-center text-sm text-muted-foreground"
       >
         No organizations yet.
       </div>
-      <ul v-else class="flex flex-col divide-y divide-[var(--color-border)]">
+      <ul v-else class="flex flex-col divide-y divide-border">
         <li
           v-for="o in orgs"
           :key="o.id"
@@ -120,9 +120,9 @@ onMounted(() => {
             >
               {{ o.name }}
             </NuxtLink>
-            <div class="font-mono text-xs text-[var(--color-muted)]">{{ o.slug }}</div>
+            <div class="font-mono text-xs text-muted-foreground">{{ o.slug }}</div>
           </div>
-          <div class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+          <div class="flex items-center gap-2 text-xs text-muted-foreground">
             <UiBadge variant="outline">{{ o.repo_count }} repos</UiBadge>
             <UiBadge variant="outline">{{ o.member_count }} members</UiBadge>
             <NuxtLink :to="`/orgs/${o.slug}`">

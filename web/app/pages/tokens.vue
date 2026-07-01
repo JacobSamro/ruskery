@@ -101,8 +101,8 @@ function closeCreate() {
     <div class="mb-6 flex items-end justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Access Tokens</h1>
-        <p class="text-sm text-[var(--color-muted)]">
-          Use a token as your password for <code class="text-[var(--color-fg)]">docker login</code>.
+        <p class="text-sm text-muted-foreground">
+          Use a token as your password for <code class="text-foreground">docker login</code>.
           Scope a token to one org or repo to limit its reach.
         </p>
       </div>
@@ -112,11 +112,11 @@ function closeCreate() {
     </div>
 
     <UiCard>
-      <div v-if="loading" class="py-8 text-center text-sm text-[var(--color-muted)]">Loading…</div>
-      <div v-else-if="!tokens.length" class="py-8 text-center text-sm text-[var(--color-muted)]">No tokens yet.</div>
+      <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+      <div v-else-if="!tokens.length" class="py-8 text-center text-sm text-muted-foreground">No tokens yet.</div>
       <table v-else class="w-full text-sm">
-        <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
-          <tr class="border-b border-[var(--color-border)]">
+        <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <tr class="border-b border-border">
             <th class="px-3 py-2 font-medium">Name</th>
             <th class="px-3 py-2 font-medium">Scope</th>
             <th class="px-3 py-2 font-medium">Permission</th>
@@ -126,16 +126,16 @@ function closeCreate() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in tokens" :key="t.id" class="border-b border-[var(--color-border)] last:border-0">
+          <tr v-for="t in tokens" :key="t.id" class="border-b border-border last:border-0">
             <td class="px-3 py-3 font-medium">{{ t.name }}</td>
             <td class="px-3 py-3">
               <UiBadge :variant="t.scope === 'all' ? 'default' : 'outline'">
                 {{ t.scope === "all" ? "all access" : t.scope }}
               </UiBadge>
             </td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ PERM_LABEL[t.max_perm] || t.max_perm }}</td>
-            <td class="px-3 py-3 font-mono text-xs text-[var(--color-muted)]">{{ t.token_prefix }}…</td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ t.last_used_at ? timeAgo(t.last_used_at) : "never" }}</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ PERM_LABEL[t.max_perm] || t.max_perm }}</td>
+            <td class="px-3 py-3 font-mono text-xs text-muted-foreground">{{ t.token_prefix }}…</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ t.last_used_at ? timeAgo(t.last_used_at) : "never" }}</td>
             <td class="px-3 py-3 text-right">
               <UiButton variant="ghost" size="sm" @click="remove(t)"><UiIcon name="trash" :size="14" /></UiButton>
             </td>
@@ -146,14 +146,14 @@ function closeCreate() {
 
     <UiModal :open="showCreate" :title="created ? 'Token created' : 'New access token'" @close="closeCreate">
       <div v-if="created" class="flex flex-col gap-4">
-        <p class="text-sm text-[var(--color-muted)]">Copy it now — you won't be able to see it again.</p>
-        <div class="flex items-center gap-2 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs">
+        <p class="text-sm text-muted-foreground">Copy it now — you won't be able to see it again.</p>
+        <div class="flex items-center gap-2 rounded-[var(--radius)] border border-border bg-background px-3 py-2 font-mono text-xs">
           <span class="flex-1 break-all">{{ created }}</span>
           <UiButton variant="ghost" size="sm" @click="copyToken">
             <UiIcon :name="copied ? 'check' : 'copy'" :size="14" />
           </UiButton>
         </div>
-        <div class="rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs text-[var(--color-muted)]">
+        <div class="rounded-[var(--radius)] border border-border bg-background px-3 py-2 font-mono text-xs text-muted-foreground">
           docker login &lt;host&gt; -u {{ me?.user.username }} -p {{ created }}
         </div>
         <div class="flex justify-end">
@@ -188,7 +188,7 @@ function closeCreate() {
               <SelectItem value="pull">Read-only (pull)</SelectItem>
             </SelectContent>
           </Select>
-          <p class="text-xs text-[var(--color-muted)]">Caps the token below your own access; never grants more.</p>
+          <p class="text-xs text-muted-foreground">Caps the token below your own access; never grants more.</p>
         </div>
 
         <div v-if="scopeType !== 'all'" class="flex flex-col gap-1.5">

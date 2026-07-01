@@ -208,7 +208,7 @@ onMounted(() => {
 <template>
   <div>
     <h1 class="mb-1 text-2xl font-semibold tracking-tight">Instance settings</h1>
-    <p class="mb-6 text-sm text-[var(--color-muted)]">
+    <p class="mb-6 text-sm text-muted-foreground">
       Global configuration for this ruskery instance — applies to every organization.
     </p>
 
@@ -230,9 +230,9 @@ onMounted(() => {
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <label class="text-sm font-medium">CDN URL <span class="text-[var(--color-muted)]">(custom domain for pulls — optional)</span></label>
+            <label class="text-sm font-medium">CDN URL <span class="text-muted-foreground">(custom domain for pulls — optional)</span></label>
             <UiInput v-model="storage.cdn_url" placeholder="https://cdn.yourcompany.com" />
-            <p class="text-xs text-[var(--color-muted)]">
+            <p class="text-xs text-muted-foreground">
               When set, pull redirects are signed for and served from this host instead of the S3 endpoint.
             </p>
           </div>
@@ -268,7 +268,7 @@ onMounted(() => {
 
           <div class="flex items-center justify-between">
             <p v-if="storageError" class="text-sm text-red-400">{{ storageError }}</p>
-            <p v-else-if="storageSaved" class="text-sm text-[var(--color-primary)]">Saved — applied live.</p>
+            <p v-else-if="storageSaved" class="text-sm text-primary">Saved — applied live.</p>
             <span v-else></span>
             <UiButton type="submit">Save storage</UiButton>
           </div>
@@ -286,16 +286,16 @@ onMounted(() => {
 
           <div class="flex flex-col gap-1.5">
             <label class="text-sm font-medium">Authorized redirect URI</label>
-            <div class="flex items-center gap-2 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs">
+            <div class="flex items-center gap-2 rounded-[var(--radius)] border border-border bg-background px-3 py-2 font-mono text-xs">
               <span class="flex-1 break-all">{{ oauth.redirect_uri }}</span>
               <UiButton variant="ghost" size="sm" type="button" @click="copyRedirect">
                 <UiIcon :name="redirectCopied ? 'check' : 'copy'" :size="14" />
               </UiButton>
             </div>
-            <p class="text-xs text-[var(--color-muted)]">
-              Add this exact URL under <span class="text-[var(--color-fg)]">APIs &amp; Services → Credentials →
+            <p class="text-xs text-muted-foreground">
+              Add this exact URL under <span class="text-foreground">APIs &amp; Services → Credentials →
               your OAuth client → Authorized redirect URIs</span> in the Google Cloud console.
-              (Set <code class="text-[var(--color-fg)]">server.public_url</code> so this stays stable.)
+              (Set <code class="text-foreground">server.public_url</code> so this stays stable.)
             </p>
           </div>
 
@@ -312,9 +312,9 @@ onMounted(() => {
             />
           </div>
           <div class="flex flex-col gap-1.5">
-            <label class="text-sm font-medium">Allowed email domain <span class="text-[var(--color-muted)]">(optional)</span></label>
+            <label class="text-sm font-medium">Allowed email domain <span class="text-muted-foreground">(optional)</span></label>
             <UiInput v-model="oauth.allowed_domain" placeholder="yourcompany.com" />
-            <p class="text-xs text-[var(--color-muted)]">
+            <p class="text-xs text-muted-foreground">
               If set, only verified emails in this domain may sign in — and they're auto-created on first
               login. Leave blank to allow Google sign-in only for users that already have an account.
             </p>
@@ -322,7 +322,7 @@ onMounted(() => {
 
           <div class="flex items-center justify-between">
             <p v-if="oauthError" class="text-sm text-red-400">{{ oauthError }}</p>
-            <p v-else-if="oauthSaved" class="text-sm text-[var(--color-primary)]">Saved.</p>
+            <p v-else-if="oauthSaved" class="text-sm text-primary">Saved.</p>
             <span v-else></span>
             <UiButton type="submit">Save Google sign-in</UiButton>
           </div>
@@ -335,21 +335,21 @@ onMounted(() => {
       >
         <div
           v-if="!tlsEnabled"
-          class="mb-4 flex items-start gap-2 rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] p-3 text-sm text-[var(--color-muted)]"
+          class="mb-4 flex items-start gap-2 rounded-[var(--radius)] border border-border bg-background p-3 text-sm text-muted-foreground"
         >
           <UiIcon name="shield" :size="16" class="mt-0.5" />
-          <span>Automatic TLS is disabled in this instance's config. Set <code class="text-[var(--color-fg)]">tls.enabled = true</code> (it's on by default) and restart to provision certificates.</span>
+          <span>Automatic TLS is disabled in this instance's config. Set <code class="text-foreground">tls.enabled = true</code> (it's on by default) and restart to provision certificates.</span>
         </div>
 
-        <p class="mb-3 text-sm text-[var(--color-muted)]">
-          Point an <span class="font-mono text-[var(--color-fg)]">A</span> record for your domain at this
+        <p class="mb-3 text-sm text-muted-foreground">
+          Point an <span class="font-mono text-foreground">A</span> record for your domain at this
           server's IP, then add it below. ruskery requests a certificate once DNS resolves here.
         </p>
 
         <div class="mb-4">
           <label class="text-sm font-medium">
             Let's Encrypt contact email
-            <span class="text-[var(--color-muted)]">(required before adding a domain)</span>
+            <span class="text-muted-foreground">(required before adding a domain)</span>
           </label>
           <div class="mt-1 flex gap-2">
             <UiInput
@@ -362,7 +362,7 @@ onMounted(() => {
             <UiButton variant="outline" @click="saveContactEmail">Save</UiButton>
           </div>
           <p v-if="contactError" class="mt-1 text-sm text-red-400">{{ contactError }}</p>
-          <p v-else-if="contactSaved" class="mt-1 text-sm text-[var(--color-muted)]">
+          <p v-else-if="contactSaved" class="mt-1 text-sm text-muted-foreground">
             Saved — used when registering with Let's Encrypt.
           </p>
         </div>
@@ -373,10 +373,10 @@ onMounted(() => {
         </div>
         <p v-if="domainError" class="mb-3 text-sm text-red-400">{{ domainError }}</p>
 
-        <div v-if="!domains.length" class="py-4 text-center text-sm text-[var(--color-muted)]">
+        <div v-if="!domains.length" class="py-4 text-center text-sm text-muted-foreground">
           No custom domains yet.
         </div>
-        <ul v-else class="flex flex-col divide-y divide-[var(--color-border)]">
+        <ul v-else class="flex flex-col divide-y divide-border">
           <li v-for="d in domains" :key="d.domain" class="flex items-center justify-between py-3 text-sm">
             <div class="flex items-center gap-2">
               <span class="font-mono">{{ d.domain }}</span>
@@ -401,9 +401,9 @@ onMounted(() => {
         </template>
         <table class="w-full text-sm">
           <tbody>
-            <tr v-for="u in users" :key="u.id" class="border-b border-[var(--color-border)] last:border-0">
+            <tr v-for="u in users" :key="u.id" class="border-b border-border last:border-0">
               <td class="py-2 font-medium">{{ u.username }}</td>
-              <td class="py-2 text-[var(--color-muted)]">{{ u.email }}</td>
+              <td class="py-2 text-muted-foreground">{{ u.email }}</td>
               <td class="py-2 text-right">
                 <UiBadge v-if="u.is_admin" variant="primary">admin</UiBadge>
               </td>

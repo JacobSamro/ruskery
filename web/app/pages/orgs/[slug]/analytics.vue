@@ -77,7 +77,7 @@ watch([range, slug], load);
 
 const labels = computed(() => data.value?.series.map((p) => p.day) ?? []);
 const activitySeries = computed(() => [
-  { name: "Pulls", color: "var(--color-primary)", values: data.value?.series.map((p) => p.pulls) ?? [] },
+  { name: "Pulls", color: "var(--primary)", values: data.value?.series.map((p) => p.pulls) ?? [] },
   { name: "Pushes", color: "#60a5fa", values: data.value?.series.map((p) => p.pushes) ?? [] },
 ]);
 const storageSeries = computed(() => [
@@ -90,7 +90,7 @@ const storageSeries = computed(() => [
     <div class="mb-6 flex items-end justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Analytics</h1>
-        <p class="text-sm text-[var(--color-muted)]">
+        <p class="text-sm text-muted-foreground">
           Push, pull, storage and activity for this organization.
         </p>
       </div>
@@ -104,30 +104,30 @@ const storageSeries = computed(() => [
       </Select>
     </div>
 
-    <div v-if="loading" class="py-12 text-center text-sm text-[var(--color-muted)]">Loading…</div>
+    <div v-if="loading" class="py-12 text-center text-sm text-muted-foreground">Loading…</div>
 
     <div v-else-if="data" class="flex flex-col gap-6">
       <!-- overview cards -->
       <div class="grid grid-cols-2 gap-4 md:grid-cols-4">
         <UiCard data-testid="metric-pulls">
-          <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Pulls</div>
+          <div class="text-xs uppercase tracking-wide text-muted-foreground">Pulls</div>
           <div class="mt-1 text-2xl font-semibold">{{ data.overview.pulls.toLocaleString() }}</div>
-          <div class="text-xs text-[var(--color-muted)]">last {{ data.range_days }}d</div>
+          <div class="text-xs text-muted-foreground">last {{ data.range_days }}d</div>
         </UiCard>
         <UiCard data-testid="metric-pushes">
-          <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Pushes</div>
+          <div class="text-xs uppercase tracking-wide text-muted-foreground">Pushes</div>
           <div class="mt-1 text-2xl font-semibold">{{ data.overview.pushes.toLocaleString() }}</div>
-          <div class="text-xs text-[var(--color-muted)]">last {{ data.range_days }}d</div>
+          <div class="text-xs text-muted-foreground">last {{ data.range_days }}d</div>
         </UiCard>
         <UiCard data-testid="metric-storage">
-          <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Storage</div>
+          <div class="text-xs uppercase tracking-wide text-muted-foreground">Storage</div>
           <div class="mt-1 text-2xl font-semibold">{{ bytes(data.overview.storage_bytes) }}</div>
-          <div class="text-xs text-[var(--color-muted)]">{{ data.overview.storage_blobs.toLocaleString() }} blobs (dedup'd)</div>
+          <div class="text-xs text-muted-foreground">{{ data.overview.storage_blobs.toLocaleString() }} blobs (dedup'd)</div>
         </UiCard>
         <UiCard>
-          <div class="text-xs uppercase tracking-wide text-[var(--color-muted)]">Egress (attributed)</div>
+          <div class="text-xs uppercase tracking-wide text-muted-foreground">Egress (attributed)</div>
           <div class="mt-1 text-2xl font-semibold">{{ bytes(data.overview.bytes_served) }}</div>
-          <div class="text-xs text-[var(--color-muted)]">{{ data.overview.blob_serves.toLocaleString() }} layer serves</div>
+          <div class="text-xs text-muted-foreground">{{ data.overview.blob_serves.toLocaleString() }} layer serves</div>
         </UiCard>
       </div>
 
@@ -143,10 +143,10 @@ const storageSeries = computed(() => [
 
       <!-- top repos -->
       <UiCard title="Top repositories" description="Most-pulled repositories in this range.">
-        <div v-if="!data.top_repos.length" class="py-4 text-center text-sm text-[var(--color-muted)]">No activity yet.</div>
+        <div v-if="!data.top_repos.length" class="py-4 text-center text-sm text-muted-foreground">No activity yet.</div>
         <table v-else class="w-full text-sm">
-          <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
-            <tr class="border-b border-[var(--color-border)]">
+          <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+            <tr class="border-b border-border">
               <th class="px-3 py-2 font-medium">Repository</th>
               <th class="px-3 py-2 font-medium text-right">Pulls</th>
               <th class="px-3 py-2 font-medium text-right">Pushes</th>
@@ -154,11 +154,11 @@ const storageSeries = computed(() => [
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in data.top_repos" :key="r.repo" class="border-b border-[var(--color-border)] last:border-0">
+            <tr v-for="r in data.top_repos" :key="r.repo" class="border-b border-border last:border-0">
               <td class="px-3 py-2 font-mono">{{ r.repo }}</td>
               <td class="px-3 py-2 text-right">{{ r.pulls.toLocaleString() }}</td>
               <td class="px-3 py-2 text-right">{{ r.pushes.toLocaleString() }}</td>
-              <td class="px-3 py-2 text-right text-[var(--color-muted)]">{{ bytes(r.storage_bytes) }}</td>
+              <td class="px-3 py-2 text-right text-muted-foreground">{{ bytes(r.storage_bytes) }}</td>
             </tr>
           </tbody>
         </table>
@@ -166,17 +166,17 @@ const storageSeries = computed(() => [
 
       <!-- top users -->
       <UiCard title="Most active users" description="Pushes and pulls by member.">
-        <div v-if="!data.top_users.length" class="py-4 text-center text-sm text-[var(--color-muted)]">No activity yet.</div>
+        <div v-if="!data.top_users.length" class="py-4 text-center text-sm text-muted-foreground">No activity yet.</div>
         <table v-else class="w-full text-sm">
-          <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
-            <tr class="border-b border-[var(--color-border)]">
+          <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+            <tr class="border-b border-border">
               <th class="px-3 py-2 font-medium">User</th>
               <th class="px-3 py-2 font-medium text-right">Pushes</th>
               <th class="px-3 py-2 font-medium text-right">Pulls</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="u in data.top_users" :key="u.user_id" class="border-b border-[var(--color-border)] last:border-0">
+            <tr v-for="u in data.top_users" :key="u.user_id" class="border-b border-border last:border-0">
               <td class="px-3 py-2 font-medium">{{ u.username }}</td>
               <td class="px-3 py-2 text-right">{{ u.pushes.toLocaleString() }}</td>
               <td class="px-3 py-2 text-right">{{ u.pulls.toLocaleString() }}</td>

@@ -11,7 +11,7 @@ const emit = defineEmits<{ close: [] }>();
       @click.self="emit('close')"
     >
       <div
-        class="w-full max-w-md rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-xl"
+        class="w-full max-w-md rounded-xl border border-border bg-card text-card-foreground p-6 shadow-xl"
       >
         <h2 v-if="title" class="mb-4 text-lg font-semibold">{{ title }}</h2>
         <slot />

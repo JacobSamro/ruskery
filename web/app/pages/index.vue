@@ -48,5 +48,5 @@ async function createOrg() {
       </form>
     </UiCard>
   </div>
-  <div v-else class="text-[var(--color-muted)]">Redirecting…</div>
+  <div v-else class="text-muted-foreground">Redirecting…</div>
 </template>

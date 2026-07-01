@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Light / dark / system theme.** The dashboard now supports light, dark, and
+  system themes with a toggle (sun/moon) in the sidebar and on the login screen,
+  built the way shadcn-vue recommends: `@nuxtjs/color-mode` toggles the
+  `dark`/`light` class on `<html>` (default follows the OS, falls back to dark),
+  the preference is persisted, and an inline init script applies it before first
+  paint (no flash; covered by the server's per-HTML CSP hashing). The whole UI
+  was consolidated onto shadcn-vue's semantic design tokens (`background`,
+  `card`, `muted-foreground`, `primary`, `border`, …) — replacing a bespoke
+  always-dark palette — with the ruskery brand accent (orange) carried through
+  both themes. The core primitives (Button, Card, Badge, plus a new
+  DropdownMenu) are now the official shadcn-vue components. Covered by a
+  Playwright spec (toggle switches and persists across reloads).
+
 - **Pull-through cache (registry mirror).** An org can be configured to mirror
   an upstream OCI registry (`ruskery admin set-upstream --org <slug> --url
   https://registry-1.docker.io [--username --password]`). A pull that misses

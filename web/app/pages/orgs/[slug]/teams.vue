@@ -102,7 +102,7 @@ async function setPerm() {
     <div class="mb-6 flex items-end justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Teams</h1>
-        <p class="text-sm text-[var(--color-muted)]">Group members and grant per-repository access.</p>
+        <p class="text-sm text-muted-foreground">Group members and grant per-repository access.</p>
       </div>
       <UiButton v-if="canAdmin" size="sm" @click="showCreate = true">
         <UiIcon name="plus" :size="14" /> New team
@@ -111,12 +111,12 @@ async function setPerm() {
 
     <div class="grid grid-cols-3 gap-6">
       <UiCard class="col-span-1">
-        <div v-if="!teams.length" class="py-6 text-center text-sm text-[var(--color-muted)]">No teams yet.</div>
+        <div v-if="!teams.length" class="py-6 text-center text-sm text-muted-foreground">No teams yet.</div>
         <ul class="flex flex-col gap-1">
           <li v-for="t in teams" :key="t.id">
             <button
-              class="flex w-full items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-left text-sm transition-colors"
-              :class="selected?.id === t.id ? 'bg-[var(--color-bg)] font-medium' : 'text-[var(--color-muted)] hover:bg-[var(--color-bg)]'"
+              class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors"
+              :class="selected?.id === t.id ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-muted/50'"
               @click="select(t)"
             >
               <UiIcon name="team" :size="16" /> {{ t.name }}
@@ -133,10 +133,10 @@ async function setPerm() {
               <UiButton size="sm" @click="addMember">Add</UiButton>
             </div>
           </template>
-          <div v-if="!teamMembers.length" class="py-4 text-sm text-[var(--color-muted)]">No members.</div>
-          <ul v-else class="flex flex-col divide-y divide-[var(--color-border)]">
+          <div v-if="!teamMembers.length" class="py-4 text-sm text-muted-foreground">No members.</div>
+          <ul v-else class="flex flex-col divide-y divide-border">
             <li v-for="m in teamMembers" :key="m.user_id" class="flex items-center justify-between py-2 text-sm">
-              <span>{{ m.username }} <span class="text-[var(--color-muted)]">· {{ m.role }}</span></span>
+              <span>{{ m.username }} <span class="text-muted-foreground">· {{ m.role }}</span></span>
               <UiButton v-if="canAdmin" variant="ghost" size="sm" @click="removeMember(m)">
                 <UiIcon name="trash" :size="14" />
               </UiButton>
@@ -159,8 +159,8 @@ async function setPerm() {
               <UiButton size="sm" @click="setPerm">Grant</UiButton>
             </div>
           </template>
-          <div v-if="!teamPerms.length" class="py-4 text-sm text-[var(--color-muted)]">No grants.</div>
-          <ul v-else class="flex flex-col divide-y divide-[var(--color-border)]">
+          <div v-if="!teamPerms.length" class="py-4 text-sm text-muted-foreground">No grants.</div>
+          <ul v-else class="flex flex-col divide-y divide-border">
             <li v-for="p in teamPerms" :key="p.repo" class="flex items-center justify-between py-2 text-sm">
               <span class="font-mono">{{ p.repo }}</span>
               <UiBadge variant="outline">{{ p.permission }}</UiBadge>

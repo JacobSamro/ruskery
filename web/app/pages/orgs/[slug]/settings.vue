@@ -15,18 +15,18 @@ const host = computed(() => window.location.host);
       <UiCard title="Organization" description="Namespace for your repositories.">
         <dl class="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <dt class="text-[var(--color-muted)]">Slug</dt>
+            <dt class="text-muted-foreground">Slug</dt>
             <dd class="font-mono">{{ slug }}</dd>
           </div>
           <div>
-            <dt class="text-[var(--color-muted)]">Registry host</dt>
+            <dt class="text-muted-foreground">Registry host</dt>
             <dd class="font-mono">{{ host }}</dd>
           </div>
         </dl>
       </UiCard>
 
       <UiCard title="Quick start" description="Authenticate and push your first image.">
-        <pre class="overflow-x-auto rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-xs leading-relaxed"><code>docker login {{ host }} -u {{ me?.user.username }} -p &lt;access-token&gt;
+        <pre class="overflow-x-auto rounded-[var(--radius)] border border-border bg-background p-4 text-xs leading-relaxed"><code>docker login {{ host }} -u {{ me?.user.username }} -p &lt;access-token&gt;
 docker tag my-image {{ host }}/{{ slug }}/my-image:latest
 docker push {{ host }}/{{ slug }}/my-image:latest</code></pre>
       </UiCard>

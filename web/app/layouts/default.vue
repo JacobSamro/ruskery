@@ -53,19 +53,22 @@ async function logout() {
 }
 
 const linkClass =
-  "flex items-center gap-3 rounded-[var(--radius)] px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-bg)] hover:text-[var(--color-fg)]";
-const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
+  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground";
+const activeClass = "bg-accent !text-accent-foreground";
 </script>
 
 <template>
-  <div v-if="bare" class="flex min-h-full items-center justify-center p-6">
+  <div v-if="bare" class="relative flex min-h-full items-center justify-center p-6">
+    <div class="absolute right-4 top-4">
+      <ModeToggle />
+    </div>
     <slot />
   </div>
 
   <div v-else class="flex min-h-full">
-    <aside class="flex w-60 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+    <aside class="flex w-60 flex-col border-r border-border bg-card p-4">
       <NuxtLink to="/" class="mb-6 flex items-center gap-2 px-2">
-        <div class="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--color-primary)] text-[var(--color-primary-fg)]">
+        <div class="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <UiIcon name="grid" :size="16" />
         </div>
         <span class="text-lg font-semibold tracking-tight">ruskery</span>
@@ -95,7 +98,7 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
           {{ n.label }}
         </NuxtLink>
 
-        <div class="my-2 border-t border-[var(--color-border)]" />
+        <div class="my-2 border-t border-border" />
 
         <NuxtLink
           v-if="me?.user.is_admin"
@@ -124,14 +127,17 @@ const activeClass = "bg-[var(--color-bg)] !text-[var(--color-fg)]";
         </NuxtLink>
       </nav>
 
-      <div class="mt-4 border-t border-[var(--color-border)] pt-4">
+      <div class="mt-4 border-t border-border pt-4">
         <div class="mb-2 px-2 text-sm">
           <div class="font-medium">{{ me?.user.username }}</div>
-          <div class="truncate text-xs text-[var(--color-muted)]">{{ me?.user.email }}</div>
+          <div class="truncate text-xs text-muted-foreground">{{ me?.user.email }}</div>
         </div>
-        <UiButton variant="ghost" size="sm" class="w-full !justify-start" data-testid="sign-out" @click="logout">
-          <UiIcon name="logout" :size="16" /> Sign out
-        </UiButton>
+        <div class="flex items-center gap-2">
+          <UiButton variant="ghost" size="sm" class="flex-1 !justify-start" data-testid="sign-out" @click="logout">
+            <UiIcon name="logout" :size="16" /> Sign out
+          </UiButton>
+          <ModeToggle />
+        </div>
       </div>
     </aside>
 

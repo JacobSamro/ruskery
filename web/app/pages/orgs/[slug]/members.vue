@@ -73,7 +73,7 @@ async function remove(m: Member) {
     <div class="mb-6 flex items-end justify-between">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Members</h1>
-        <p class="text-sm text-[var(--color-muted)]">People in this organization and their roles.</p>
+        <p class="text-sm text-muted-foreground">People in this organization and their roles.</p>
       </div>
       <UiButton v-if="canAdmin" size="sm" @click="showAdd = true">
         <UiIcon name="plus" :size="14" /> Add member
@@ -81,10 +81,10 @@ async function remove(m: Member) {
     </div>
 
     <UiCard>
-      <div v-if="loading" class="py-8 text-center text-sm text-[var(--color-muted)]">Loading…</div>
+      <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">Loading…</div>
       <table v-else class="w-full text-sm">
-        <thead class="text-left text-xs uppercase tracking-wide text-[var(--color-muted)]">
-          <tr class="border-b border-[var(--color-border)]">
+        <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <tr class="border-b border-border">
             <th class="px-3 py-2 font-medium">User</th>
             <th class="px-3 py-2 font-medium">Email</th>
             <th class="px-3 py-2 font-medium">Role</th>
@@ -92,9 +92,9 @@ async function remove(m: Member) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in members" :key="m.user_id" class="border-b border-[var(--color-border)] last:border-0">
+          <tr v-for="m in members" :key="m.user_id" class="border-b border-border last:border-0">
             <td class="px-3 py-3 font-medium">{{ m.username }}</td>
-            <td class="px-3 py-3 text-[var(--color-muted)]">{{ m.email }}</td>
+            <td class="px-3 py-3 text-muted-foreground">{{ m.email }}</td>
             <td class="px-3 py-3">
               <Select
                 v-if="canAdmin"
