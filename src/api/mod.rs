@@ -32,7 +32,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/orgs", get(list_orgs).post(create_org))
         .route("/api/v1/admin/orgs", get(list_all_orgs))
         .route("/api/v1/orgs/{slug}", get(get_org))
-        .route("/api/v1/orgs/{slug}/repos", get(list_repos))
+        .route(
+            "/api/v1/orgs/{slug}/repos",
+            get(list_repos).post(create_repo),
+        )
         .route("/api/v1/orgs/{slug}/analytics", get(org_analytics))
         .route(
             "/api/v1/orgs/{slug}/repos/{*name}",
@@ -499,6 +502,63 @@ async fn list_repos(
     let (org, _) = member_of(&state, &user.id, &slug).await?;
     let repos = db::orgs::list_repos(state.db(), &org.id).await?;
     Ok(json_ok(json!({ "repositories": repos })))
+}
+
+#[derive(Deserialize)]
+struct CreateRepoReq {
+    name: String,
+}
+
+/// A repository name within an org: one or more `/`-separated components, each
+/// non-empty and drawn from the OCI repository-name character set. Mirrors the
+/// registry's own validation (minus the leading org segment).
+fn valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name.split('/').all(|s| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.bytes().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-')
+                })
+        })
+}
+
+/// Create an empty repository up front (owner/admin), instead of waiting for the
+/// first push to materialize it. Idempotency: a name that already exists is a
+/// conflict.
+async fn create_repo(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Path(slug): Path<String>,
+    Json(req): Json<CreateRepoReq>,
+) -> Result<Response> {
+    let (org, _) = admin_of(&state, &user.id, &slug).await?;
+    let name = req.name.trim();
+    if !valid_repo_name(name) {
+        return Err(Error::bad_request(
+            "invalid repository name (lowercase letters, digits, '.', '_', '-', '/')",
+        ));
+    }
+    if db::orgs::find_repo(state.db(), &org.id, name)
+        .await?
+        .is_some()
+    {
+        return Err(Error::conflict("repository already exists"));
+    }
+    let repo = db::orgs::create_repo(state.db(), &org.id, name).await?;
+    db::audit::record(
+        state.db(),
+        Some(&user.id),
+        Some(&org.id),
+        "repo.create",
+        Some(name),
+        None,
+    )
+    .await
+    .ok();
+    Ok((StatusCode::CREATED, Json(json!({ "repository": repo }))).into_response())
 }
 
 /// Org usage analytics over a trailing window (`?range=30d`, default 30, max 365).

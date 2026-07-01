@@ -179,12 +179,17 @@ pub async fn find_repo(db: &Db, org_id: &str, name: &str) -> Result<Option<Repos
     Ok(r)
 }
 
+/// Create a repository, or return the existing one if it already exists.
+/// Idempotent (`ON CONFLICT DO NOTHING` on the `(org_id, name)` unique index) so
+/// two racing creates — whether two dashboard clicks or two concurrent first
+/// pushes — can't collide on a duplicate-key insert.
 pub async fn create_repo(db: &Db, org_id: &str, name: &str) -> Result<Repository> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_rfc3339();
-    sqlx::query(
+    let res = sqlx::query(
         "INSERT INTO repositories (id, org_id, name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(org_id, name) DO NOTHING",
     )
     .bind(&id)
     .bind(org_id)
@@ -193,13 +198,21 @@ pub async fn create_repo(db: &Db, org_id: &str, name: &str) -> Result<Repository
     .bind(&now)
     .execute(db)
     .await?;
-    Ok(Repository {
-        id,
-        org_id: org_id.into(),
-        name: name.into(),
-        created_at: now.clone(),
-        updated_at: now,
-    })
+
+    if res.rows_affected() == 1 {
+        Ok(Repository {
+            id,
+            org_id: org_id.into(),
+            name: name.into(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    } else {
+        // The row already existed (a concurrent create won the race) — return it.
+        find_repo(db, org_id, name)
+            .await?
+            .ok_or(crate::error::Error::NotFound)
+    }
 }
 
 /// Fully-qualified repository names (`<org-slug>/<repo>`) visible to a user,

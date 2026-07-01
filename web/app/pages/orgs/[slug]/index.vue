@@ -4,16 +4,20 @@ const api = useApi();
 const slug = computed(() => route.params.slug as string);
 
 const stats = ref<OrgStats | null>(null);
+const role = ref<string>("");
 const repos = ref<RepoSummary[]>([]);
 const loading = ref(true);
+
+const canManage = computed(() => role.value === "owner" || role.value === "admin");
 
 async function load() {
   loading.value = true;
   try {
     const [org, list] = await Promise.all([
-      api.get<{ stats: OrgStats }>(`/api/v1/orgs/${slug.value}`),
+      api.get<{ role: string; stats: OrgStats }>(`/api/v1/orgs/${slug.value}`),
       api.get<{ repositories: RepoSummary[] }>(`/api/v1/orgs/${slug.value}/repos`),
     ]);
+    role.value = org.role;
     stats.value = org.stats;
     repos.value = list.repositories;
   } finally {
@@ -22,19 +26,55 @@ async function load() {
 }
 onMounted(load);
 watch(slug, load);
+
+// ── create repository ──
+const showCreate = ref(false);
+const newName = ref("");
+const creating = ref(false);
+const createError = ref("");
+
+function openCreate() {
+  newName.value = "";
+  createError.value = "";
+  showCreate.value = true;
+}
+function closeCreate() {
+  showCreate.value = false;
+}
+
+async function createRepo() {
+  const name = newName.value.trim();
+  if (!name || creating.value) return;
+  creating.value = true;
+  createError.value = "";
+  try {
+    await api.post(`/api/v1/orgs/${slug.value}/repos`, { name });
+    closeCreate();
+    await load();
+  } catch (e) {
+    createError.value = apiErrorMessage(e);
+  } finally {
+    creating.value = false;
+  }
+}
 </script>
 
 <template>
   <div>
-    <div class="mb-6 flex items-end justify-between">
+    <div class="mb-6 flex items-end justify-between gap-4">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">Repositories</h1>
         <p class="text-sm text-muted-foreground">Container images in this organization.</p>
       </div>
-      <div v-if="stats" class="flex gap-2">
-        <UiBadge>{{ stats.repos }} repos</UiBadge>
-        <UiBadge>{{ stats.members }} members</UiBadge>
-        <UiBadge>{{ stats.teams }} teams</UiBadge>
+      <div class="flex items-center gap-2">
+        <template v-if="stats">
+          <UiBadge>{{ stats.repos }} repos</UiBadge>
+          <UiBadge>{{ stats.members }} members</UiBadge>
+          <UiBadge>{{ stats.teams }} teams</UiBadge>
+        </template>
+        <UiButton v-if="canManage" size="sm" data-testid="new-repo" @click="openCreate">
+          <UiIcon name="plus" :size="16" /> New repository
+        </UiButton>
       </div>
     </div>
 
@@ -45,10 +85,13 @@ watch(slug, load);
         <div>
           <p class="font-medium">No repositories yet</p>
           <p class="mt-1 text-sm text-muted-foreground">
-            Push your first image:
+            Create one below, or push your first image:
             <code class="text-foreground">docker push &lt;host&gt;/{{ slug }}/app:latest</code>
           </p>
         </div>
+        <UiButton v-if="canManage" size="sm" @click="openCreate">
+          <UiIcon name="plus" :size="16" /> New repository
+        </UiButton>
       </div>
       <table v-else class="w-full text-sm">
         <thead class="text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -79,5 +122,24 @@ watch(slug, load);
         </tbody>
       </table>
     </UiCard>
+
+    <UiModal :open="showCreate" title="New repository" @close="closeCreate">
+      <form class="flex flex-col gap-4" @submit.prevent="createRepo">
+        <div>
+          <label class="mb-1.5 block text-sm font-medium">Name</label>
+          <UiInput v-model="newName" placeholder="team/app" data-testid="new-repo-name" />
+          <p class="mt-1.5 text-xs text-muted-foreground">
+            Lowercase letters, digits, <code>. _ -</code> and <code>/</code>.
+          </p>
+        </div>
+        <p v-if="createError" class="text-sm text-destructive">{{ createError }}</p>
+        <div class="flex justify-end gap-2">
+          <UiButton type="button" variant="ghost" @click="closeCreate">Cancel</UiButton>
+          <UiButton type="submit" :disabled="creating || !newName.trim()" data-testid="new-repo-submit">
+            {{ creating ? "Creating…" : "Create" }}
+          </UiButton>
+        </div>
+      </form>
+    </UiModal>
   </div>
 </template>

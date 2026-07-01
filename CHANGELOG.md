@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Create a repository from the dashboard.** Owners/admins can now create an
+  empty repository up front (Repositories → *New repository*) instead of waiting
+  for the first `docker push` to materialize it. Backed by
+  `POST /api/v1/orgs/{slug}/repos` (name-validated, admin-only, 409 on a name
+  that already exists).
+
 - **Light / dark / system theme.** The dashboard now supports light, dark, and
   system themes with a toggle (sun/moon) in the sidebar and on the login screen,
   built the way shadcn-vue recommends: `@nuxtjs/color-mode` toggles the
