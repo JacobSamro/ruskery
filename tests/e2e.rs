@@ -1148,6 +1148,18 @@ async fn end_to_end() {
         "repository:acme/trash:pull,push,delete",
     )
     .await;
+    // While the manifest still references it, the blob must not be deletable —
+    // otherwise a repo admin could break sibling repos that share the blob.
+    assert_eq!(
+        reg.delete(format!("{base}/v2/acme/trash/blobs/{unique_d}"))
+            .bearer_auth(&trash_jwt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409,
+        "a still-referenced blob must not be deletable"
+    );
     // Delete the manifest -> tag no longer resolves.
     assert_eq!(
         reg.delete(format!("{base}/v2/acme/trash/manifests/{trash_manifest_d}"))

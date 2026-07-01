@@ -93,6 +93,17 @@ pub async fn delete(state: &AppState, org_id: &str, digest: &str) -> Result<Resp
     if !db::content::blob_exists(state.db(), org_id, digest).await? {
         return Err(blob_unknown());
     }
+    // Blobs are org-scoped and deduplicated across repos, so a blob still
+    // referenced by *any* manifest in the org must not be removed — otherwise an
+    // admin on one repo could break another repo's images (and even this repo's).
+    // Only genuinely unreferenced blobs are deletable here; GC handles the rest.
+    if db::content::blob_referenced(state.db(), org_id, digest).await? {
+        return Err(Error::oci(
+            StatusCode::CONFLICT,
+            "DENIED",
+            "blob is still referenced by one or more manifests",
+        ));
+    }
     let key = Storage::blob_key(org_id, digest);
     let _ = state.storage().delete(&key).await;
     db::content::delete_blob(state.db(), org_id, digest).await?;

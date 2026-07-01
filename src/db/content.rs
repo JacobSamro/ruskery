@@ -51,6 +51,25 @@ pub async fn record_blob(db: &Db, org_id: &str, digest: &str, size: i64) -> Resu
     Ok(())
 }
 
+/// Whether any manifest in the org still references this blob. A direct blob
+/// `DELETE` is refused while this is true, so an admin on one repo can't remove
+/// a blob that another repo's manifest depends on (blobs are org-scoped and
+/// deduplicated). Genuinely orphaned blobs remain deletable, and GC sweeps the
+/// rest; see [`unreferenced_blobs`], which uses the same reference test.
+pub async fn blob_referenced(db: &Db, org_id: &str, digest: &str) -> Result<bool> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM manifest_blobs mb
+         JOIN repositories r ON r.id = mb.repo_id
+         WHERE r.org_id = ? AND mb.blob_digest = ?
+         LIMIT 1",
+    )
+    .bind(org_id)
+    .bind(digest)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn delete_blob(db: &Db, org_id: &str, digest: &str) -> Result<()> {
     sqlx::query("DELETE FROM blobs WHERE org_id = ? AND digest = ?")
         .bind(org_id)
