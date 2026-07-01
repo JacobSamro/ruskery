@@ -2434,6 +2434,15 @@ async fn provider_import_digitalocean() {
         .unwrap();
     assert_eq!(r.status(), 200, "setup failed");
 
+    // "Test connection" validates the DO token before importing.
+    let test = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports/test"))
+        .json(&json!({ "provider": "digitalocean", "username": "dop_tok", "password": "dop_tok" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(test.status(), 200, "DO credentials should test OK");
+
     // Dropdown discovery: the DO API stub lists one registry with two repos.
     let disc: serde_json::Value = dash
         .post(format!("{base}/api/v1/orgs/acme/imports/discover"))
@@ -2599,4 +2608,71 @@ async fn provider_import_github() {
         .await
         .unwrap();
     assert_eq!(m.status(), 200, "imported GHCR package should be pullable");
+}
+
+/// The import dialog's "Test connection" button: a reachable upstream with good
+/// credentials passes; an unreachable host fails — without creating any job.
+#[tokio::test]
+async fn import_test_connection() {
+    let stub = spawn_s3_stub().await;
+    let up = spawn_upstream_stub().await;
+    let rk = Ruskery::spawn_with(&stub, &[("RUSKERY_IMPORT__ALLOW_LOOPBACK", "true")]).await;
+    let base = rk.base.clone();
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+
+    // Reachable upstream → the test passes with a friendly detail.
+    let ok = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports/test"))
+        .json(&json!({ "provider": "generic", "host": up.base }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200, "reachable upstream should pass the test");
+    let body: serde_json::Value = ok.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert!(
+        body["detail"].as_str().unwrap().contains("Connected"),
+        "detail should confirm the connection: {body}"
+    );
+
+    // Unreachable host → the test fails (and no import job was created).
+    let bad = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports/test"))
+        .json(&json!({ "provider": "generic", "host": "http://127.0.0.1:1" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !bad.status().is_success(),
+        "unreachable upstream should fail the test, got {}",
+        bad.status()
+    );
+
+    let list: serde_json::Value = dash
+        .get(format!("{base}/api/v1/orgs/acme/imports"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        list["imports"].as_array().unwrap().len(),
+        0,
+        "testing must not create an import job"
+    );
 }

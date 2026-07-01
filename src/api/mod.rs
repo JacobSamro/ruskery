@@ -44,6 +44,7 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/orgs/{slug}/imports/discover",
             post(discover_namespaces),
         )
+        .route("/api/v1/orgs/{slug}/imports/test", post(test_connection))
         .route("/api/v1/orgs/{slug}/analytics", get(org_analytics))
         .route(
             "/api/v1/orgs/{slug}/repos/{*name}",
@@ -597,6 +598,16 @@ struct DiscoverReq {
     password: Option<String>,
 }
 
+/// Request to test upstream reachability + credentials before starting an import.
+#[derive(serde::Deserialize)]
+struct TestConnReq {
+    provider: Option<String>,
+    #[serde(default)]
+    host: String,
+    username: Option<String>,
+    password: Option<String>,
+}
+
 /// Normalize an image-prefix filter: trim surrounding whitespace and slashes so
 /// `foo`, `/foo/`, and `foo/` all mean the same namespace. Empty → no filter.
 fn normalize_image_prefix(input: Option<String>) -> Option<String> {
@@ -746,6 +757,56 @@ async fn discover_namespaces(
     };
     let namespaces = crate::providers::discover(provider, &up).await?;
     Ok(json_ok(json!({ "namespaces": namespaces })))
+}
+
+/// Test upstream reachability + credentials before an import (owner/admin), so
+/// the dialog can give a clear thumbs-up/down. Generic probes the registry's
+/// `/v2/` bearer flow; DigitalOcean/GitHub authenticate against the provider API
+/// (and report how many registries/owners the token can see). Any failure
+/// surfaces as the usual error JSON, which the dialog shows to the user.
+async fn test_connection(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Path(slug): Path<String>,
+    Json(req): Json<TestConnReq>,
+) -> Result<Response> {
+    admin_of(&state, &user.id, &slug).await?;
+    let nonempty = |s: Option<String>| s.filter(|v: &String| !v.trim().is_empty());
+    let provider = crate::providers::Provider::parse(req.provider.as_deref());
+    let url = match provider.registry_url() {
+        Some(fixed) => fixed,
+        None => normalize_upstream(&req.host)?,
+    };
+    let up = db::orgs::OrgUpstream {
+        url,
+        username: nonempty(req.username),
+        password: nonempty(req.password),
+    };
+
+    let detail = match provider {
+        crate::providers::Provider::Generic => {
+            guard_upstream_host(&up.url, state.config().import.allow_loopback).await?;
+            crate::proxy::probe(&up).await?;
+            format!("Connected to {} — credentials accepted.", up.url)
+        }
+        crate::providers::Provider::DigitalOcean => {
+            let regs = crate::providers::discover(provider, &up).await?;
+            format!(
+                "Authenticated with DigitalOcean — {} registr{} visible.",
+                regs.len(),
+                if regs.len() == 1 { "y" } else { "ies" }
+            )
+        }
+        crate::providers::Provider::Github => {
+            let owners = crate::providers::discover(provider, &up).await?;
+            format!(
+                "Authenticated with GitHub — {} owner{} visible.",
+                owners.len(),
+                if owners.len() == 1 { "" } else { "s" }
+            )
+        }
+    };
+    Ok(json_ok(json!({ "ok": true, "detail": detail })))
 }
 
 /// List this org's import jobs (owner/admin), most recent first, with progress.

@@ -124,6 +124,9 @@ const importNamespace = ref("");
 const importNamespaces = ref<{ name: string; repo_count: number | null }[]>([]);
 const discovering = ref(false);
 const discoverError = ref("");
+const testing = ref(false);
+const testState = ref<"idle" | "ok" | "error">("idle");
+const testMessage = ref("");
 const importing = ref(false);
 const importError = ref("");
 
@@ -141,6 +144,19 @@ const canStartImport = computed(() => {
   return !!importNamespace.value; // DO/GitHub require a picked namespace
 });
 
+// Enough to attempt a connection test: a host for generic, a token otherwise.
+const canTest = computed(() => {
+  if (importProvider.value === "generic") return !!importHost.value.trim();
+  return !!importPass.value.trim();
+});
+
+function resetTest() {
+  testState.value = "idle";
+  testMessage.value = "";
+}
+// Editing the host/credentials invalidates a prior test result.
+watch([importProvider, importHost, importUser, importPass], resetTest);
+
 async function openImport() {
   importProvider.value = "generic";
   importHost.value = "";
@@ -150,6 +166,7 @@ async function openImport() {
   importNamespace.value = "";
   importNamespaces.value = [];
   discoverError.value = "";
+  resetTest();
   importError.value = "";
   importOrg.value = slug.value;
   try {
@@ -198,6 +215,31 @@ async function discoverNamespaces() {
     discoverError.value = apiErrorMessage(e);
   } finally {
     discovering.value = false;
+  }
+}
+
+// Validate reachability + credentials before importing (no job is created).
+async function testConnection() {
+  if (testing.value || !canTest.value) return;
+  resetTest();
+  testing.value = true;
+  const isGeneric = importProvider.value === "generic";
+  try {
+    const res = await api.post<{ ok: boolean; detail: string }>(
+      `/api/v1/orgs/${importOrg.value || slug.value}/imports/test`,
+      {
+        provider: importProvider.value,
+        host: isGeneric ? importHost.value.trim() : undefined,
+        ...importCreds(),
+      },
+    );
+    testState.value = "ok";
+    testMessage.value = res.detail || "Credentials accepted.";
+  } catch (e) {
+    testState.value = "error";
+    testMessage.value = apiErrorMessage(e);
+  } finally {
+    testing.value = false;
   }
 }
 
@@ -497,6 +539,34 @@ function importPct(i: ImportJob): number {
             Enter your token, then <strong>Load</strong> to list your
             {{ importProvider === "digitalocean" ? "registries" : "owners" }}.
           </p>
+        </div>
+
+        <!-- verify reachability + credentials before creating a job -->
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <UiButton
+            type="button"
+            variant="outline"
+            size="sm"
+            :disabled="testing || !canTest"
+            data-testid="import-test"
+            @click="testConnection"
+          >
+            <UiIcon name="check" :size="14" /> {{ testing ? "Testing…" : "Test connection" }}
+          </UiButton>
+          <span
+            v-if="testState === 'ok'"
+            class="text-xs text-emerald-600 dark:text-emerald-400"
+            data-testid="import-test-result"
+          >
+            ✓ {{ testMessage }}
+          </span>
+          <span
+            v-else-if="testState === 'error'"
+            class="text-xs text-destructive"
+            data-testid="import-test-result"
+          >
+            ✗ {{ testMessage }}
+          </span>
         </div>
 
         <p v-if="importError" class="text-sm text-destructive">{{ importError }}</p>
