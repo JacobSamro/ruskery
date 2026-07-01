@@ -356,6 +356,30 @@ async fn dispatch(
         }
     }
 
+    // Per-image pull counter for the dashboard's image list. A manifest GET that
+    // succeeds carries `Docker-Content-Digest` (blob GETs 307, tag/referrer GETs
+    // omit it), so that header uniquely identifies a pull. Bumped off the
+    // response path so it never adds latency to the pull.
+    if method == Method::GET {
+        if let Ok(resp) = result.as_ref() {
+            if resp.status() == StatusCode::OK {
+                if let Some(digest) = resp
+                    .headers()
+                    .get("docker-content-digest")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+                {
+                    let db = state.db().clone();
+                    let org_id = org.id.clone();
+                    let repo = repo_name.clone();
+                    tokio::spawn(async move {
+                        let _ = db::orgs::bump_image_pull(&db, &org_id, &repo, &digest).await;
+                    });
+                }
+            }
+        }
+    }
+
     result.unwrap_or_else(|e| e.into_response())
 }
 

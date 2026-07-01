@@ -740,7 +740,15 @@ async fn get_repo(
     let repo = db::orgs::find_repo(state.db(), &org.id, &name)
         .await?
         .ok_or(Error::NotFound)?;
-    let tags = db::orgs::repo_tag_details(state.db(), &repo.id).await?;
+    let mut tags = db::orgs::repo_tag_details(state.db(), &repo.id).await?;
+    let counts: std::collections::HashMap<String, i64> =
+        db::orgs::image_pull_counts(state.db(), &org.id, &name)
+            .await?
+            .into_iter()
+            .collect();
+    for t in &mut tags {
+        t.pull_count = counts.get(&t.digest).copied().unwrap_or(0);
+    }
     let pull = format!("docker pull {}/{}/{}", pull_host(&state), slug, name);
     Ok(json_ok(
         json!({ "repository": repo, "tags": tags, "pull_prefix": pull }),

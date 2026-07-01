@@ -533,6 +533,10 @@ pub struct TagDetail {
     pub digest: String,
     pub size: i64,
     pub updated_at: String,
+    /// Number of times this image (digest) has been pulled. Populated by the
+    /// caller from `image_pull_counts`; 0 until then.
+    #[serde(default)]
+    pub pull_count: i64,
 }
 
 /// Tags for a repo with the manifest digest, total image size (manifest +
@@ -565,12 +569,46 @@ pub async fn repo_tag_details(db: &Db, repo_id: &str) -> Result<Vec<TagDetail>> 
             digest,
             size,
             updated_at,
+            pull_count: 0,
         });
     }
     Ok(out)
 }
 
+/// Increment the pull counter for one image (manifest digest). Best-effort: run
+/// off the request path. Keyed by org + repo name + digest so the pull hot path
+/// needs no id lookup.
+pub async fn bump_image_pull(db: &Db, org_id: &str, repo: &str, digest: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO image_pulls (org_id, repo, digest, count) VALUES (?, ?, ?, 1)
+         ON CONFLICT(org_id, repo, digest) DO UPDATE SET count = count + 1",
+    )
+    .bind(org_id)
+    .bind(repo)
+    .bind(digest)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Pull counts for every image in a repo, as `(digest, count)`.
+pub async fn image_pull_counts(db: &Db, org_id: &str, repo: &str) -> Result<Vec<(String, i64)>> {
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT digest, count FROM image_pulls WHERE org_id = ? AND repo = ?",
+    )
+    .bind(org_id)
+    .bind(repo)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn delete_repo(db: &Db, org_id: &str, name: &str) -> Result<()> {
+    sqlx::query("DELETE FROM image_pulls WHERE org_id = ? AND repo = ?")
+        .bind(org_id)
+        .bind(name)
+        .execute(db)
+        .await?;
     sqlx::query("DELETE FROM repositories WHERE org_id = ? AND name = ?")
         .bind(org_id)
         .bind(name)

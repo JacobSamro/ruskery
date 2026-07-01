@@ -2256,4 +2256,28 @@ async fn catalog_import() {
             "pulled blob bytes must hash to its digest"
         );
     }
+
+    // The manifest GET above bumped the per-image pull counter (recorded off the
+    // response path), surfaced on the dashboard repo detail. Poll until it lands.
+    let mut counted = false;
+    for _ in 0..50 {
+        let detail: serde_json::Value = dash
+            .get(format!("{base}/api/v1/orgs/acme/repos/library/test"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let pulls = detail["tags"][0]["pull_count"].as_i64().unwrap_or(0);
+        if pulls >= 1 {
+            counted = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    }
+    assert!(
+        counted,
+        "manifest pull should increment the image pull count"
+    );
 }
