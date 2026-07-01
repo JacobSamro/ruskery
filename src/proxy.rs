@@ -28,6 +28,16 @@ use crate::storage::Storage;
 /// Multipart part size when streaming an upstream blob into object storage.
 const PART_SIZE: usize = 8 * 1024 * 1024;
 
+/// Caps on *buffered* upstream responses, so a malicious/compromised upstream
+/// can't drive us to OOM. Blobs are streamed (not buffered) and bounded
+/// elsewhere; these cover the JSON/manifest bodies we hold in memory.
+const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024; // manifests/indexes are small
+const MAX_LIST_BYTES: usize = 64 * 1024 * 1024; // one _catalog / tags/list page
+const MAX_TOKEN_BYTES: usize = 1024 * 1024; // token-endpoint JSON
+/// Safety cap on pagination pages followed, so an upstream that always returns a
+/// `next` link can't loop forever.
+const MAX_PAGES: usize = 10_000;
+
 /// Media types we'll accept from the upstream — OCI and Docker, image and index.
 const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
      application/vnd.oci.image.manifest.v1+json, \
@@ -71,6 +81,31 @@ fn is_blocked_ip_literal(host: &str) -> bool {
         Ok(IpAddr::V6(v6)) => (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.is_unspecified(),
         Err(_) => false,
     }
+}
+
+/// Read a response body into memory, refusing to buffer more than `max` bytes
+/// (checking `Content-Length` first, then enforcing while streaming so a lying
+/// or absent length can't get past the cap).
+async fn read_capped(resp: reqwest::Response, max: usize, what: &str) -> Result<bytes::Bytes> {
+    if let Some(len) = resp.content_length() {
+        if len > max as u64 {
+            return Err(upstream_error(format!(
+                "upstream {what} too large ({len} bytes, limit {max})"
+            )));
+        }
+    }
+    let mut stream = resp.bytes_stream();
+    let mut buf = bytes::BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| upstream_error(format!("reading upstream {what}: {e}")))?;
+        if buf.len() + chunk.len() > max {
+            return Err(upstream_error(format!(
+                "upstream {what} exceeded {max} bytes"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf.freeze())
 }
 
 /// Resolve `url`'s host and refuse if any address is link-local or unspecified.
@@ -347,7 +382,13 @@ pub(crate) async fn list_catalog(up: &OrgUpstream) -> Result<Vec<String>> {
     let mut out = Vec::new();
     // Page with a bounded size; keep following the server's `next` link.
     let mut next = format!("{}/v2/_catalog?n=200", up.url);
+    let mut pages = 0usize;
     loop {
+        pages += 1;
+        if pages > MAX_PAGES {
+            tracing::warn!("upstream _catalog exceeded {MAX_PAGES} pages; truncating listing");
+            break;
+        }
         let resp = send_authed(up, &next, None, "registry:catalog:*").await?;
         let status = resp.status();
         if !status.is_success() {
@@ -356,9 +397,8 @@ pub(crate) async fn list_catalog(up: &OrgUpstream) -> Result<Vec<String>> {
             )));
         }
         let link = link_next(resp.headers(), &up.url);
-        let body: serde_json::Value = resp
-            .json()
-            .await
+        let raw = read_capped(resp, MAX_LIST_BYTES, "catalog").await?;
+        let body: serde_json::Value = serde_json::from_slice(&raw)
             .map_err(|e| upstream_error(format!("reading upstream catalog: {e}")))?;
         if let Some(repos) = body.get("repositories").and_then(|r| r.as_array()) {
             out.extend(repos.iter().filter_map(|r| r.as_str().map(String::from)));
@@ -381,7 +421,13 @@ pub(crate) async fn list_tags(up: &OrgUpstream, repo: &str) -> Result<Vec<String
     let mut out = Vec::new();
     let scope = format!("repository:{repo}:pull");
     let mut next = format!("{}/v2/{}/tags/list?n=200", up.url, repo);
+    let mut pages = 0usize;
     loop {
+        pages += 1;
+        if pages > MAX_PAGES {
+            tracing::warn!("upstream tags/list for {repo} exceeded {MAX_PAGES} pages; truncating");
+            break;
+        }
         let resp = send_authed(up, &next, None, &scope).await?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -393,9 +439,8 @@ pub(crate) async fn list_tags(up: &OrgUpstream, repo: &str) -> Result<Vec<String
             )));
         }
         let link = link_next(resp.headers(), &up.url);
-        let body: serde_json::Value = resp
-            .json()
-            .await
+        let raw = read_capped(resp, MAX_LIST_BYTES, "tags").await?;
+        let body: serde_json::Value = serde_json::from_slice(&raw)
             .map_err(|e| upstream_error(format!("reading upstream tags for {repo}: {e}")))?;
         if let Some(tags) = body.get("tags").and_then(|t| t.as_array()) {
             out.extend(tags.iter().filter_map(|t| t.as_str().map(String::from)));
@@ -451,10 +496,7 @@ pub(crate) async fn fetch_manifest(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/vnd.oci.image.manifest.v1+json")
         .to_string();
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| upstream_error(format!("reading upstream manifest: {e}")))?;
+    let bytes = read_capped(resp, MAX_MANIFEST_BYTES, "manifest").await?;
     Ok(Some((bytes, media_type)))
 }
 
@@ -534,9 +576,8 @@ async fn bearer_token(up: &OrgUpstream, challenge: &str, scope: &str) -> Result<
             resp.status()
         )));
     }
-    let body: serde_json::Value = resp
-        .json()
-        .await
+    let raw = read_capped(resp, MAX_TOKEN_BYTES, "token response").await?;
+    let body: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|e| upstream_error(format!("upstream token response: {e}")))?;
     let token = body
         .get("token")
