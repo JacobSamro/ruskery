@@ -175,7 +175,10 @@ async fn http_server(addr: String, app: Router, domains: Vec<String>, public_url
                     .headers()
                     .get(header::HOST)
                     .and_then(|v| v.to_str().ok())
-                    .map(|h| h.split(':').next().unwrap_or(h).to_string());
+                    // Hostnames are case-insensitive; configured domains are
+                    // stored lowercased, so normalize before matching or a
+                    // mixed-case Host would skip the HTTPS redirect.
+                    .map(|h| h.split(':').next().unwrap_or(h).to_ascii_lowercase());
                 match host {
                     Some(h) if domains.contains(&h) => redirect_to_https(req, &public_url),
                     _ => next.run(req).await,
