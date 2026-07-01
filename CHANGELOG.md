@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-01
+
 ### Changed
 
 - **Bulk import is now parallel — much faster.** Imports were fully sequential
@@ -26,6 +28,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Pulls are counted per digest at serve time (bounded, off the response path) and
   stored in a new `image_pulls` table (migration `0009`); the count is cleared
   when the image or repo is deleted.
+
+### Fixed
+
+- **Leaked multipart uploads are now visible in logs.** When streaming a blob
+  from an upstream into object storage failed (during a pull-through cache miss
+  or a bulk import), the in-progress S3 multipart upload was aborted
+  best-effort, but a failure of the abort itself was silently discarded —
+  hiding a potential leak. Abort failures are now logged at `warn`; the bucket's
+  incomplete-multipart lifecycle rule remains the ultimate backstop.
 
 ## [0.6.0] - 2026-07-01
 
