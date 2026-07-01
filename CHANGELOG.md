@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-01
+
 ### Added
 
 - **Bulk import from another registry.** A new *Import* action on the
