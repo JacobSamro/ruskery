@@ -150,6 +150,21 @@ pub async fn cache_blob(
     Ok(())
 }
 
+/// Abort an in-progress multipart upload, logging (not swallowing) a failure.
+/// Abort is best-effort — the bucket's incomplete-multipart lifecycle rule is
+/// the ultimate backstop for leaked parts — but discarding the error silently
+/// would hide a leak entirely, so surface it at `warn`.
+async fn abort_multipart_logged(storage: &Storage, key: &str, upload_id: &str) {
+    if let Err(e) = storage.abort_multipart(key, upload_id).await {
+        tracing::warn!(
+            %key,
+            upload_id,
+            error = %e,
+            "failed to abort multipart upload; leaked parts rely on the bucket's incomplete-multipart lifecycle rule"
+        );
+    }
+}
+
 /// Stream an upstream response body into object storage at `key`, computing the
 /// SHA-256 as it flows and verifying it against `expected_digest` before
 /// committing. Uses a multipart upload, flushing fixed-size parts, so a large
@@ -201,7 +216,7 @@ async fn stream_to_storage(
     }
 
     if let Some(e) = error {
-        let _ = storage.abort_multipart(key, &upload_id).await;
+        abort_multipart_logged(storage, key, &upload_id).await;
         return Err(e);
     }
 
@@ -209,7 +224,7 @@ async fn stream_to_storage(
     // commit it under the content-addressed key.
     let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
     if !crate::registry::digests_equal(&computed, expected_digest) {
-        let _ = storage.abort_multipart(key, &upload_id).await;
+        abort_multipart_logged(storage, key, &upload_id).await;
         return Err(upstream_error(format!(
             "upstream blob digest mismatch: got {computed}, expected {expected_digest}"
         )));
@@ -219,7 +234,7 @@ async fn stream_to_storage(
     // multipart after flushing any tail. A failure on the commit path aborts the
     // multipart so we don't leak an in-progress upload that GC can't reach.
     if parts.is_empty() {
-        let _ = storage.abort_multipart(key, &upload_id).await;
+        abort_multipart_logged(storage, key, &upload_id).await;
         storage.put(key, std::mem::take(&mut buffer)).await?;
     } else {
         if !buffer.is_empty() {
@@ -227,13 +242,13 @@ async fn stream_to_storage(
             match storage.upload_part(key, &upload_id, next_part, last).await {
                 Ok(p) => parts.push(p),
                 Err(e) => {
-                    let _ = storage.abort_multipart(key, &upload_id).await;
+                    abort_multipart_logged(storage, key, &upload_id).await;
                     return Err(e);
                 }
             }
         }
         if let Err(e) = storage.complete_multipart(key, &upload_id, parts).await {
-            let _ = storage.abort_multipart(key, &upload_id).await;
+            abort_multipart_logged(storage, key, &upload_id).await;
             return Err(e);
         }
     }
