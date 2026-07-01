@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-01
+
+### Added
+
+- **Import from DigitalOcean and GitHub (GHCR) via provider adapters.** The
+  import dialog gains a **Provider** selector. For DigitalOcean and GitHub,
+  ruskery enumerates repositories through the provider's own API (the DO
+  registries API, the GitHub Packages API) instead of the OCI `/v2/_catalog`
+  endpoint — which those hosts don't populate reliably. A DigitalOcean account
+  with multiple registries (where `_catalog` returned *nothing*) now imports
+  correctly: enter a token, click **Load**, and pick a registry/owner from a
+  dropdown. The generic OCI-catalog path is unchanged, and a generic import that
+  enumerates zero repositories now fails with guidance instead of silently
+  completing at 0/0.
+- **"Test connection" button** in the import dialog. Validates upstream
+  reachability and credentials before an import creates any job — green with a
+  summary of what the token can see on success, red with the error on failure.
+
 ## [0.8.0] - 2026-07-01
 
 ### Added
