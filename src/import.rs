@@ -6,16 +6,26 @@
 //! bearer-token dance, digest-verified blob streaming into object storage, and
 //! content-addressed manifest recording — but drives it *eagerly*: enumerate the
 //! catalog (`/v2/_catalog`), then for every tag copy the manifest, recursing
-//! into manifest-list children so multi-arch images come across whole. Blobs
-//! already present under the org are skipped (dedup), so re-running is cheap.
+//! into manifest-list children so multi-arch images come across whole.
+//!
+//! Work is parallelized under a single bound (`import.concurrency`): repositories
+//! are copied concurrently, and within an image the config + layer blobs download
+//! concurrently — all gated by one semaphore so the total number of in-flight
+//! upstream downloads stays capped. A per-digest lock dedups shared base layers
+//! so two images never download the same blob twice at once. Blobs already
+//! present under the org are skipped, so re-running is cheap.
 //!
 //! Credentials live only in the running task; only the upstream URL and progress
 //! counters are persisted (see `db::imports`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex};
 
+use futures::future::join_all;
+use futures::stream::StreamExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 use crate::db;
 use crate::db::orgs::{Org, OrgUpstream};
@@ -29,6 +39,17 @@ use crate::state::AppState;
 /// manifests); nested indexes are rare and shallow.
 const MAX_MANIFEST_DEPTH: usize = 8;
 
+/// Shared concurrency controls for one import run.
+struct Ctx {
+    /// Max repositories copied in parallel.
+    concurrency: usize,
+    /// Caps total in-flight blob downloads across the whole import.
+    blob_sem: Semaphore,
+    /// Per-digest locks: two tasks copying the same blob serialize here, so a
+    /// shared base layer is downloaded once (the second finds it already stored).
+    inflight: StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+}
+
 /// What a single manifest (and its children) copied, for progress accounting.
 #[derive(Default)]
 struct Copied {
@@ -39,9 +60,15 @@ struct Copied {
 /// Kick off an import in the background. The task owns `up` (with credentials)
 /// for its lifetime and updates the `imports` row as it goes.
 pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream) {
+    let concurrency = state.config().import.concurrency.max(1);
     tokio::spawn(async move {
-        tracing::info!(import = %id, upstream = %up.url, org = %org.slug, "import started");
-        let outcome = run(&state, &id, &org, &up).await;
+        tracing::info!(import = %id, upstream = %up.url, org = %org.slug, concurrency, "import started");
+        let ctx = Ctx {
+            concurrency,
+            blob_sem: Semaphore::new(concurrency),
+            inflight: StdMutex::new(HashMap::new()),
+        };
+        let outcome = run(&state, &id, &org, &up, &ctx).await;
         match outcome {
             Ok(()) => {
                 tracing::info!(import = %id, "import completed");
@@ -55,48 +82,58 @@ pub fn spawn(state: AppState, id: String, org: Org, up: OrgUpstream) {
     });
 }
 
-/// Enumerate the catalog and copy each repository's tags. A failure listing or
-/// copying a single repo/tag is logged and skipped (progress still advances) so
-/// one bad image can't abort a large migration; only a catalog-level failure
+/// Enumerate the catalog and copy each repository concurrently. A failure listing
+/// or copying a single repo/tag is logged and skipped (progress still advances)
+/// so one bad image can't abort a large migration; only a catalog-level failure
 /// (unreachable/unauthorized) fails the whole job.
-async fn run(state: &AppState, id: &str, org: &Org, up: &OrgUpstream) -> Result<()> {
+async fn run(state: &AppState, id: &str, org: &Org, up: &OrgUpstream, ctx: &Ctx) -> Result<()> {
     let repos = proxy::list_catalog(up).await?;
     db::imports::set_repos_total(state.db(), id, repos.len() as i64).await?;
 
-    for repo in &repos {
-        let tags = match proxy::list_tags(up, repo).await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(%repo, error = %e, "import: listing tags failed; skipping repo");
-                let _ = db::imports::advance(state.db(), id, 1, 0, 0, 0).await;
-                continue;
-            }
-        };
-        db::imports::add_tags_total(state.db(), id, tags.len() as i64).await?;
+    futures::stream::iter(repos.iter())
+        .for_each_concurrent(ctx.concurrency, |repo| async move {
+            copy_repo(state, id, org, up, ctx, repo).await;
+        })
+        .await;
+    Ok(())
+}
 
-        for tag in &tags {
-            // Fresh visited-set per tag: breaks cycles and skips re-copying a
-            // manifest already handled while resolving this tag's index.
-            let mut visited = HashSet::new();
-            match copy_reference(state, up, org, repo, tag, 0, &mut visited).await {
-                Ok(c) => {
-                    let _ = db::imports::advance(state.db(), id, 0, 1, c.blobs, c.bytes).await;
-                }
-                Err(e) => {
-                    tracing::warn!(%repo, %tag, error = %e, "import: tag failed; skipping");
-                    let _ = db::imports::advance(state.db(), id, 0, 1, 0, 0).await;
-                }
+/// Copy every tag of one repository (tags sequential; the parallelism is across
+/// repos and within each image's blobs).
+async fn copy_repo(state: &AppState, id: &str, org: &Org, up: &OrgUpstream, ctx: &Ctx, repo: &str) {
+    let tags = match proxy::list_tags(up, repo).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(%repo, error = %e, "import: listing tags failed; skipping repo");
+            let _ = db::imports::advance(state.db(), id, 1, 0, 0, 0).await;
+            return;
+        }
+    };
+    let _ = db::imports::add_tags_total(state.db(), id, tags.len() as i64).await;
+
+    for tag in &tags {
+        // Fresh visited-set per tag: breaks cycles and skips re-copying a
+        // manifest already handled while resolving this tag's index.
+        let mut visited = HashSet::new();
+        match copy_reference(state, up, org, repo, tag, 0, &mut visited, ctx).await {
+            Ok(c) => {
+                let _ = db::imports::advance(state.db(), id, 0, 1, c.blobs, c.bytes).await;
+            }
+            Err(e) => {
+                tracing::warn!(%repo, %tag, error = %e, "import: tag failed; skipping");
+                let _ = db::imports::advance(state.db(), id, 0, 1, 0, 0).await;
             }
         }
-        let _ = db::imports::advance(state.db(), id, 1, 0, 0, 0).await;
     }
-    Ok(())
+    let _ = db::imports::advance(state.db(), id, 1, 0, 0, 0).await;
 }
 
 /// Copy one manifest reference (tag or digest) and everything it points at into
 /// the org's repo. For a manifest list / image index, recurse into each child
 /// manifest first (so all platforms come over); for an image manifest, copy the
-/// config + layer blobs (skipping any already present) then store the manifest.
+/// config + layer blobs concurrently (skipping any already present) then store
+/// the manifest.
+#[allow(clippy::too_many_arguments)]
 async fn copy_reference(
     state: &AppState,
     up: &OrgUpstream,
@@ -105,6 +142,7 @@ async fn copy_reference(
     reference: &str,
     depth: usize,
     visited: &mut HashSet<String>,
+    ctx: &Ctx,
 ) -> Result<Copied> {
     if depth > MAX_MANIFEST_DEPTH {
         return Err(Error::Other(anyhow::anyhow!(
@@ -136,10 +174,22 @@ async fn copy_reference(
     let mut copied = Copied::default();
     let children = manifests::parse_child_refs(&doc);
     if children.is_empty() {
-        // Image manifest: copy config + layers (content-addressed, dedup'd).
-        for (digest, size) in blob_descriptors(&doc) {
-            if !db::content::blob_exists(state.db(), &org.id, &digest).await? {
-                proxy::cache_blob(state, &org.id, repo, &digest, up).await?;
+        // Image manifest: copy config + layers concurrently (content-addressed,
+        // dedup'd across the whole import via the per-digest lock). Use
+        // `join_all`, not `try_join_all`: on an error we must NOT cancel the
+        // sibling copies, or a sibling dropped mid-multipart-upload would skip
+        // its abort and leak an in-progress upload. Let every copy finish (each
+        // aborts its own multipart on failure), then surface the first error.
+        let descs = blob_descriptors(&doc);
+        let results = join_all(descs.iter().map(|(digest, size)| async move {
+            copy_blob_once(state, &org.id, repo, digest, up, ctx)
+                .await
+                .map(|did_copy| (did_copy, *size))
+        }))
+        .await;
+        for result in results {
+            let (did_copy, size) = result?;
+            if did_copy {
                 copied.blobs += 1;
                 copied.bytes += size;
             }
@@ -155,6 +205,7 @@ async fn copy_reference(
                 child,
                 depth + 1,
                 visited,
+                ctx,
             ))
             .await?;
             copied.blobs += c.blobs;
@@ -165,6 +216,41 @@ async fn copy_reference(
     // Store this manifest (image or index) last, after its dependencies exist.
     proxy::store_manifest(state, org, repo, reference, &bytes, &media_type).await?;
     Ok(copied)
+}
+
+/// Copy one blob into the org exactly once, even under concurrency. Returns
+/// `true` if this call actually downloaded it (for progress accounting), `false`
+/// if it was already present. The per-digest lock plus the re-check means a base
+/// layer shared by many images is fetched a single time.
+async fn copy_blob_once(
+    state: &AppState,
+    org_id: &str,
+    repo: &str,
+    digest: &str,
+    up: &OrgUpstream,
+    ctx: &Ctx,
+) -> Result<bool> {
+    if db::content::blob_exists(state.db(), org_id, digest).await? {
+        return Ok(false);
+    }
+    let lock = {
+        let mut map = ctx.inflight.lock().unwrap();
+        map.entry(digest.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    let _guard = lock.lock().await;
+    // Another task may have finished this blob while we waited for the lock.
+    if db::content::blob_exists(state.db(), org_id, digest).await? {
+        return Ok(false);
+    }
+    let _permit = ctx
+        .blob_sem
+        .acquire()
+        .await
+        .map_err(|_| Error::Other(anyhow::anyhow!("import semaphore closed")))?;
+    proxy::cache_blob(state, org_id, repo, digest, up).await?;
+    Ok(true)
 }
 
 /// Collect `(digest, size)` for the config + layer blobs of an image manifest.

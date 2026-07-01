@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Bulk import is now parallel — much faster.** Imports were fully sequential
+  (one blob, one tag, one repo at a time); they now copy repositories
+  concurrently and download an image's config + layer blobs in parallel, all
+  under a single bound (`import.concurrency`, default 6). A per-digest lock dedups
+  base layers shared across images, so a shared layer is fetched only once even
+  under concurrency. For a typical multi-layer image the copy time drops toward
+  the *slowest* layer instead of the *sum* of all layers.
+
 ### Added
 
 - **Redesigned repository image list with per-image pull counts.** A repo's tags

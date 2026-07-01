@@ -44,13 +44,27 @@ pub struct Config {
 }
 
 /// Bulk registry-import settings.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ImportConfig {
     /// Allow importing from a loopback/unspecified upstream address (e.g. a
     /// registry on the same host). Off by default as a basic SSRF guard; a
     /// link-local address (cloud metadata, `169.254.169.254`) is refused
     /// regardless of this setting.
     pub allow_loopback: bool,
+    /// Max concurrent blob downloads during an import (also bounds how many
+    /// repositories/images are copied in parallel). Higher = faster on a fast
+    /// link, at the cost of more upstream connections + SQLite write pressure.
+    pub concurrency: usize,
+}
+
+impl Default for ImportConfig {
+    fn default() -> Self {
+        Self {
+            allow_loopback: false,
+            concurrency: 6,
+        }
+    }
 }
 
 /// Storage quota / upload-size limits. Both default to `0` (unlimited) — quotas
