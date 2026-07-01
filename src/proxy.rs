@@ -60,6 +60,13 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 /// Cap on redirect hops we'll follow (matches reqwest's old default).
 const MAX_REDIRECTS: usize = 10;
 
+/// Whether two URLs share the same origin (scheme + host + port). Credentials
+/// are only carried across a redirect that stays same-origin, so a scheme
+/// downgrade (`https`→`http`) or port change drops them.
+fn same_origin(origin: &url::Origin, next: &reqwest::Url) -> bool {
+    *origin == next.origin()
+}
+
 /// Credentials to attach to an upstream GET (dropped on cross-host redirects).
 enum Auth<'a> {
     None,
@@ -74,9 +81,12 @@ enum Auth<'a> {
 /// redirects only (matching reqwest's cross-host header-stripping); a presigned
 /// CDN target, the usual redirect, needs none.
 async fn send_get(url: &str, accept: Option<&str>, auth: Auth<'_>) -> Result<reqwest::Response> {
-    let origin_host = reqwest::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
+    // Credentials are kept across a redirect only to the *same origin* (scheme +
+    // host + port). Matching on host alone would let a trusted HTTPS realm
+    // redirect to `http://same-host/…` and resend the credentials over cleartext
+    // (a downgrade the initial non-HTTPS realm check doesn't see); an origin
+    // comparison drops auth on any scheme downgrade or port change too.
+    let origin = reqwest::Url::parse(url).ok().map(|u| u.origin());
     let mut current = url.to_string();
     let mut attach_auth = true;
     let mut hops = 0usize;
@@ -116,8 +126,7 @@ async fn send_get(url: &str, accept: Option<&str>, auth: Auth<'_>) -> Result<req
         let next_str = next.to_string();
         // The whole point: resolve + refuse a link-local/unspecified redirect hop.
         guard_fetch_target(&next_str).await?;
-        let next_host = next.host_str().map(|h| h.to_ascii_lowercase());
-        attach_auth = attach_auth && next_host == origin_host;
+        attach_auth = attach_auth && origin.as_ref().is_some_and(|o| same_origin(o, &next));
         current = next_str;
     }
 }
@@ -763,7 +772,22 @@ fn challenge_param(challenge: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{challenge_param, is_loopback_hostish, realm_is_trusted};
+    use super::{challenge_param, is_loopback_hostish, realm_is_trusted, same_origin};
+
+    #[test]
+    fn auth_stays_only_within_same_origin() {
+        let u = |s: &str| reqwest::Url::parse(s).unwrap();
+        let base = u("https://reg.example/token");
+        let o = base.origin();
+        // Same origin (path may differ) keeps credentials…
+        assert!(same_origin(&o, &u("https://reg.example/token")));
+        assert!(same_origin(&o, &u("https://reg.example/other")));
+        assert!(same_origin(&o, &u("https://reg.example:443/x"))); // explicit default port
+                                                                   // …a scheme downgrade, port change, or host change drops them.
+        assert!(!same_origin(&o, &u("http://reg.example/token")));
+        assert!(!same_origin(&o, &u("https://reg.example:8443/x")));
+        assert!(!same_origin(&o, &u("https://evil.example/token")));
+    }
 
     #[test]
     fn realm_trust_allows_expected_and_blocks_attacker() {
