@@ -360,8 +360,25 @@ async fn up_handle(
             None => StatusCode::NOT_FOUND.into_response(),
         };
     }
+    // Serve blobs via a 307 redirect (like a real registry pointing at a CDN), so
+    // the client's manual redirect-follow + per-hop SSRF guard are exercised on
+    // every pull-through/import. The redirect target is a separate `/blobstore/`
+    // path on this same stub.
     if let Some(i) = path.find("/blobs/") {
         let digest = &path[i + "/blobs/".len()..];
+        return match st.blobs.get(digest) {
+            Some(_) => (
+                StatusCode::TEMPORARY_REDIRECT,
+                [(
+                    axum::http::header::LOCATION,
+                    format!("{}/blobstore/{digest}", st.base),
+                )],
+            )
+                .into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+    if let Some(digest) = path.strip_prefix("/blobstore/") {
         return match st.blobs.get(digest) {
             Some(bytes) => (StatusCode::OK, bytes.clone()).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),

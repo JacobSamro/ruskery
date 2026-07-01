@@ -44,38 +44,81 @@ const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
      application/vnd.docker.distribution.manifest.list.v2+json, \
      application/vnd.docker.distribution.manifest.v2+json";
 
-/// Shared HTTP client. Redirects are followed (a blob `GET` the upstream answers
-/// with a CDN redirect must be chased), but the custom policy refuses any hop to
-/// a link-local or unspecified IP literal — so a malicious upstream can't bounce
-/// a request onto the cloud-metadata endpoint (`169.254.169.254`).
+/// Shared HTTP client. Automatic redirects are **disabled**: a redirect target
+/// is upstream-controlled, and reqwest's redirect policy is synchronous so it
+/// can't DNS-resolve a hostname before following. We follow manually in
+/// [`send_get`], DNS-guarding every hop, so a redirect to a name that resolves
+/// to a link-local/metadata address can't be chased.
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent(concat!("ruskery/", env!("CARGO_PKG_VERSION")))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.url().host_str().is_some_and(is_blocked_ip_literal) {
-                attempt.error("refusing to follow a redirect to a link-local/unspecified address")
-            } else if attempt.previous().len() >= 10 {
-                attempt.error("too many redirects")
-            } else {
-                attempt.follow()
-            }
-        }))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("build proxy http client")
 });
 
-/// True if `host` is an IP literal in a range we never fetch from — link-local
-/// (cloud metadata: `169.254/16`, `fe80::/10`) or unspecified. Loopback and
-/// private ranges are intentionally allowed (LAN registries are a legitimate
-/// upstream). Non-literal hostnames return `false` here and are checked via DNS
-/// by [`guard_fetch_target`].
-fn is_blocked_ip_literal(host: &str) -> bool {
-    use std::net::IpAddr;
-    let h = host.trim_start_matches('[').trim_end_matches(']');
-    match h.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => v4.is_link_local() || v4.is_unspecified(),
-        Ok(IpAddr::V6(v6)) => (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.is_unspecified(),
-        Err(_) => false,
+/// Cap on redirect hops we'll follow (matches reqwest's old default).
+const MAX_REDIRECTS: usize = 10;
+
+/// Credentials to attach to an upstream GET (dropped on cross-host redirects).
+enum Auth<'a> {
+    None,
+    Bearer(&'a str),
+    Basic(&'a str, Option<String>),
+}
+
+/// GET a URL, following redirects manually and DNS-guarding **every** hop so an
+/// upstream can't redirect us onto a link-local/metadata address — even via a
+/// hostname that resolves there (which the synchronous reqwest redirect policy
+/// can't catch). Credentials are attached to the first request and to same-host
+/// redirects only (matching reqwest's cross-host header-stripping); a presigned
+/// CDN target, the usual redirect, needs none.
+async fn send_get(url: &str, accept: Option<&str>, auth: Auth<'_>) -> Result<reqwest::Response> {
+    let origin_host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()));
+    let mut current = url.to_string();
+    let mut attach_auth = true;
+    let mut hops = 0usize;
+    loop {
+        let mut req = CLIENT.get(&current);
+        if let Some(a) = accept {
+            req = req.header(reqwest::header::ACCEPT, a);
+        }
+        if attach_auth {
+            match &auth {
+                Auth::None => {}
+                Auth::Bearer(b) => req = req.bearer_auth(b),
+                Auth::Basic(u, p) => req = req.basic_auth(u, p.clone()),
+            }
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| upstream_error(format!("upstream request failed: {e}")))?;
+        if !resp.status().is_redirection() {
+            return Ok(resp);
+        }
+        hops += 1;
+        if hops > MAX_REDIRECTS {
+            return Err(upstream_error("too many redirects from upstream"));
+        }
+        let Some(loc) = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(resp); // a redirect with no Location; hand it back as-is
+        };
+        let next = reqwest::Url::parse(&current)
+            .and_then(|base| base.join(loc))
+            .map_err(|_| upstream_error("invalid redirect location from upstream"))?;
+        let next_str = next.to_string();
+        // The whole point: resolve + refuse a link-local/unspecified redirect hop.
+        guard_fetch_target(&next_str).await?;
+        let next_host = next.host_str().map(|h| h.to_ascii_lowercase());
+        attach_auth = attach_auth && next_host == origin_host;
+        current = next_str;
     }
 }
 
@@ -611,21 +654,7 @@ async fn send_authed(
     accept: Option<&str>,
     scope: &str,
 ) -> Result<reqwest::Response> {
-    let build = |bearer: Option<&str>| {
-        let mut req = CLIENT.get(url);
-        if let Some(a) = accept {
-            req = req.header(reqwest::header::ACCEPT, a);
-        }
-        if let Some(b) = bearer {
-            req = req.bearer_auth(b);
-        }
-        req
-    };
-
-    let resp = build(None)
-        .send()
-        .await
-        .map_err(|e| upstream_error(format!("upstream request failed: {e}")))?;
+    let resp = send_get(url, accept, Auth::None).await?;
     if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
         return Ok(resp);
     }
@@ -637,10 +666,7 @@ async fn send_authed(
         .unwrap_or("")
         .to_string();
     match bearer_token(up, &challenge, scope).await? {
-        Some(token) => build(Some(&token))
-            .send()
-            .await
-            .map_err(|e| upstream_error(format!("upstream request failed: {e}"))),
+        Some(token) => send_get(url, accept, Auth::Bearer(&token)).await,
         None => Ok(resp),
     }
 }
@@ -682,21 +708,23 @@ async fn bearer_token(up: &OrgUpstream, challenge: &str, scope: &str) -> Result<
     }
     let service = challenge_param(challenge, "service");
 
-    let mut query: Vec<(&str, &str)> = Vec::new();
-    if let Some(s) = &service {
-        query.push(("service", s));
+    // Build the realm URL with its query, then fetch it through the manual,
+    // redirect-DNS-guarding path (a token endpoint that redirects can't be
+    // steered onto an internal address either).
+    let mut realm_url =
+        reqwest::Url::parse(&realm).map_err(|_| upstream_error("invalid token realm URL"))?;
+    {
+        let mut qp = realm_url.query_pairs_mut();
+        if let Some(s) = &service {
+            qp.append_pair("service", s);
+        }
+        qp.append_pair("scope", scope);
     }
-    query.push(("scope", scope));
-
-    let mut req = CLIENT.get(&realm).query(&query);
-    if let Some(user) = &up.username {
-        req = req.basic_auth(user, up.password.clone());
-    }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| upstream_error(format!("upstream token request failed: {e}")))?;
+    let auth = match &up.username {
+        Some(user) => Auth::Basic(user, up.password.clone()),
+        None => Auth::None,
+    };
+    let resp = send_get(realm_url.as_str(), None, auth).await?;
     if !resp.status().is_success() {
         return Err(upstream_error(format!(
             "upstream token endpoint status {}",
@@ -725,7 +753,7 @@ fn challenge_param(challenge: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{challenge_param, is_blocked_ip_literal, is_loopback_hostish, realm_is_trusted};
+    use super::{challenge_param, is_loopback_hostish, realm_is_trusted};
 
     #[test]
     fn realm_trust_allows_expected_and_blocks_attacker() {
@@ -762,6 +790,22 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn guard_refuses_metadata_and_unspecified_targets() {
+        use super::guard_fetch_target;
+        // The redirect/realm/pagination guard: link-local (cloud metadata) and
+        // unspecified addresses are refused (IP literals resolve to themselves,
+        // so this is hermetic — no real DNS needed).
+        assert!(
+            guard_fetch_target("http://169.254.169.254/latest/meta-data/")
+                .await
+                .is_err()
+        );
+        assert!(guard_fetch_target("http://0.0.0.0/").await.is_err());
+        // Loopback (self-hosted / test upstreams) is allowed.
+        assert!(guard_fetch_target("http://127.0.0.1:5000/").await.is_ok());
+    }
+
     #[test]
     fn loopback_hosts_are_recognized() {
         assert!(is_loopback_hostish("localhost"));
@@ -770,20 +814,6 @@ mod tests {
         assert!(is_loopback_hostish("[::1]"));
         assert!(!is_loopback_hostish("registry.example.com"));
         assert!(!is_loopback_hostish("10.0.0.1"));
-    }
-
-    #[test]
-    fn blocks_metadata_and_unspecified_ip_literals() {
-        // Cloud metadata + unspecified are refused as redirect/realm targets.
-        assert!(is_blocked_ip_literal("169.254.169.254"));
-        assert!(is_blocked_ip_literal("0.0.0.0"));
-        assert!(is_blocked_ip_literal("[fe80::1]"));
-        assert!(is_blocked_ip_literal("[::]"));
-        // Public, loopback, and private ranges are allowed (LAN registries).
-        assert!(!is_blocked_ip_literal("registry-1.docker.io"));
-        assert!(!is_blocked_ip_literal("127.0.0.1"));
-        assert!(!is_blocked_ip_literal("10.0.0.5"));
-        assert!(!is_blocked_ip_literal("52.1.2.3"));
     }
 
     #[test]
