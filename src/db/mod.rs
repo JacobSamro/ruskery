@@ -4,6 +4,7 @@ pub mod analytics;
 pub mod audit;
 pub mod content;
 pub mod domains;
+pub mod imports;
 pub mod orgs;
 pub mod settings;
 pub mod users;

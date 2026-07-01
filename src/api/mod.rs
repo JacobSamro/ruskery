@@ -36,6 +36,10 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/orgs/{slug}/repos",
             get(list_repos).post(create_repo),
         )
+        .route(
+            "/api/v1/orgs/{slug}/imports",
+            get(list_imports).post(start_import),
+        )
         .route("/api/v1/orgs/{slug}/analytics", get(org_analytics))
         .route(
             "/api/v1/orgs/{slug}/repos/{*name}",
@@ -559,6 +563,136 @@ async fn create_repo(
     .await
     .ok();
     Ok((StatusCode::CREATED, Json(json!({ "repository": repo }))).into_response())
+}
+
+#[derive(Deserialize)]
+struct StartImportReq {
+    /// Upstream registry host or base URL, e.g. `registry.digitalocean.com`.
+    host: String,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+/// Normalize a user-entered upstream into a base URL: accept a bare host
+/// (`registry.example.com`) or a full URL, default to HTTPS, drop any path and
+/// trailing slash so `{base}/v2/...` is well-formed.
+fn normalize_upstream(input: &str) -> Result<String> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return Err(Error::bad_request("upstream host is required"));
+    }
+    let with_scheme = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    };
+    let parsed = url::Url::parse(&with_scheme)
+        .map_err(|_| Error::bad_request("invalid upstream host/URL"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err(Error::bad_request("upstream must be http or https")),
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| Error::bad_request("upstream host is missing"))?;
+    let authority = match parsed.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    Ok(format!("{}://{}", parsed.scheme(), authority))
+}
+
+/// Refuse to import from an upstream that resolves to a loopback, link-local, or
+/// unspecified address. This blocks the highest-value SSRF target — the cloud
+/// metadata endpoint (`169.254.169.254`) — while still allowing private-LAN
+/// registries (RFC1918), which are a legitimate migration source. Residual
+/// caveats (an admin-only capability already, like `set-upstream`): a redirect
+/// or DNS rebinding to a blocked address after this check is not re-validated.
+async fn guard_upstream_host(base_url: &str, allow_loopback: bool) -> Result<()> {
+    use std::net::IpAddr;
+    let parsed =
+        url::Url::parse(base_url).map_err(|_| Error::bad_request("invalid upstream URL"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| Error::bad_request("upstream host is missing"))?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| Error::bad_request(format!("cannot resolve upstream host: {e}")))?;
+    let mut resolved = false;
+    for addr in addrs {
+        resolved = true;
+        let ip = addr.ip();
+        let link_local = match ip {
+            IpAddr::V4(v4) => v4.is_link_local(),
+            IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        };
+        // Link-local (cloud metadata) is never a valid registry — always refuse.
+        if link_local {
+            return Err(Error::bad_request(
+                "refusing to import from a link-local address",
+            ));
+        }
+        if (ip.is_loopback() || ip.is_unspecified()) && !allow_loopback {
+            return Err(Error::bad_request(
+                "refusing to import from a loopback address (set import.allow_loopback to permit)",
+            ));
+        }
+    }
+    if !resolved {
+        return Err(Error::bad_request("upstream host did not resolve"));
+    }
+    Ok(())
+}
+
+/// Start a background bulk import of an upstream registry's whole catalog into
+/// this org (owner/admin). Validates reachability + credentials up front, then
+/// returns immediately with the import id; progress is polled via `GET`.
+async fn start_import(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Path(slug): Path<String>,
+    Json(req): Json<StartImportReq>,
+) -> Result<Response> {
+    let (org, _) = admin_of(&state, &user.id, &slug).await?;
+    let nonempty = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
+    let up = db::orgs::OrgUpstream {
+        url: normalize_upstream(&req.host)?,
+        username: nonempty(req.username),
+        password: nonempty(req.password),
+    };
+
+    // Block obvious SSRF targets (cloud metadata, loopback), then fail fast on an
+    // unreachable host or bad credentials, before creating a job.
+    guard_upstream_host(&up.url, state.config().import.allow_loopback).await?;
+    crate::proxy::probe(&up).await?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    db::imports::create(state.db(), &id, &org.id, &up.url, &user.id).await?;
+    db::audit::record(
+        state.db(),
+        Some(&user.id),
+        Some(&org.id),
+        "import.start",
+        Some(&up.url),
+        None,
+    )
+    .await
+    .ok();
+    crate::import::spawn(state.clone(), id.clone(), org, up);
+    Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
+}
+
+/// List this org's import jobs (owner/admin), most recent first, with progress.
+async fn list_imports(
+    State(state): State<AppState>,
+    SessionUser(user): SessionUser,
+    Path(slug): Path<String>,
+) -> Result<Response> {
+    let (org, _) = admin_of(&state, &user.id, &slug).await?;
+    let imports = db::imports::list(state.db(), &org.id).await?;
+    Ok(json_ok(json!({ "imports": imports })))
 }
 
 /// Org usage analytics over a trailing window (`?range=30d`, default 30, max 365).

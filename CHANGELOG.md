@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Bulk import from another registry.** A new *Import* action on the
+  Repositories page copies an upstream OCI registry's **entire catalog** —
+  every repository, every tag, all architectures — into a target org you
+  administer. Pick the org, enter the registry host + credentials (for
+  DigitalOcean, the API token as both username and password), and it runs as a
+  tracked **background job** with live progress (repos / tags / blobs / bytes).
+  Discovery uses `/v2/_catalog`, so it works with any registry that exposes it
+  (registry:2, Harbor, DigitalOcean, …). It reuses the pull-through cache
+  machinery — the upstream bearer-token dance and digest-verified blob streaming
+  into object storage — but eagerly, following manifest lists into every child
+  so multi-arch images come across whole; blobs already present are skipped, so
+  re-running is cheap. Credentials are used only for the running job and never
+  persisted (only the upstream URL + progress counters are stored). Backed by
+  `POST/GET /api/v1/orgs/{slug}/imports` (owner/admin), migration `0008_imports`.
+
 ### Fixed
 
 - **Registry realm/audience now follows the configured domain automatically.**

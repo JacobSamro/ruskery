@@ -65,15 +65,34 @@ pub async fn cache_manifest(
     let Some((bytes, media_type)) = fetch_manifest(up, repo_name, reference).await? else {
         return Ok(());
     };
+    store_manifest(state, org, repo_name, reference, &bytes, &media_type).await?;
+    Ok(())
+}
 
-    let digest = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+/// Record an already-fetched manifest under the org's repo (creating the repo if
+/// needed): parse its blob/child/subject links, store it content-addressed, and
+/// point the tag at it (when `reference` is a tag). Returns the stored digest.
+///
+/// Shared by the pull-through cache (which fetches then stores) and the bulk
+/// importer (which fetches once, copies blobs, then stores). Unlike a client
+/// push, the referenced blobs are not required to be present at store time —
+/// the proxy caches them lazily, the importer copies them just before this call.
+pub(crate) async fn store_manifest(
+    state: &AppState,
+    org: &Org,
+    repo_name: &str,
+    reference: &str,
+    bytes: &[u8],
+    media_type: &str,
+) -> Result<String> {
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
     if manifests::is_digest(reference) && !crate::registry::digests_equal(reference, &digest) {
         return Err(upstream_error(
             "upstream manifest digest did not match the requested digest",
         ));
     }
 
-    let doc: serde_json::Value = serde_json::from_slice(&bytes)
+    let doc: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| upstream_error("upstream manifest is not valid JSON"))?;
     let blob_refs = manifests::parse_blob_refs_value(&doc);
     let child_refs = manifests::parse_child_refs(&doc);
@@ -84,21 +103,19 @@ pub async fn cache_manifest(
         None => db::orgs::create_repo(state.db(), &org.id, repo_name).await?,
     };
 
-    // Store the manifest. Unlike a client push we don't require the referenced
-    // blobs to be present yet — they're cached lazily as the client pulls them.
     let links = db::content::ManifestLinks {
         blobs: &blob_refs,
         children: &child_refs,
         subject: subject.as_ref().map(|(d, at)| (d.as_str(), at.clone())),
     };
-    db::content::put_manifest(state.db(), &repo.id, &digest, &media_type, &bytes, &links).await?;
+    db::content::put_manifest(state.db(), &repo.id, &digest, media_type, bytes, &links).await?;
 
     if !manifests::is_digest(reference) {
         db::content::upsert_tag(state.db(), &repo.id, reference, &digest).await?;
         state.cache().put_tag(&repo.id, reference, &digest);
     }
     state.cache().invalidate_manifest(&repo.id, &digest);
-    Ok(())
+    Ok(digest)
 }
 
 /// Fetch + cache a single blob from the org's upstream into object storage,
@@ -224,8 +241,113 @@ async fn stream_to_storage(
     Ok(total as i64)
 }
 
+/// Verify the upstream is reachable and the credentials work: hit `/v2/` and do
+/// the bearer dance. Returns Ok on a 2xx, else an error describing the failure.
+/// Used to give fast feedback before kicking off a long import job.
+pub(crate) async fn probe(up: &OrgUpstream) -> Result<()> {
+    let url = format!("{}/v2/", up.url);
+    let resp = send_authed(up, &url, None, "registry:catalog:*").await?;
+    let status = resp.status();
+    if status.is_success() {
+        Ok(())
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
+        Err(upstream_error(
+            "upstream rejected the credentials (401) — check the host, username, and password/token",
+        ))
+    } else {
+        Err(upstream_error(format!(
+            "upstream /v2/ returned status {status}"
+        )))
+    }
+}
+
+/// List every repository in the upstream catalog (`GET /v2/_catalog`), following
+/// `Link: rel="next"` pagination. Requires a registry that exposes `_catalog`
+/// (registry:2, Harbor, DOCR, …). Repository names are returned verbatim.
+pub(crate) async fn list_catalog(up: &OrgUpstream) -> Result<Vec<String>> {
+    // Repository names are small, so buffering the whole catalog is a few MB
+    // even for tens of thousands of repos (the large blob bytes are streamed,
+    // not buffered). If that ever becomes a concern, page through and drive the
+    // import per-page instead, updating `repos_total` incrementally.
+    let mut out = Vec::new();
+    // Page with a bounded size; keep following the server's `next` link.
+    let mut next = format!("{}/v2/_catalog?n=200", up.url);
+    loop {
+        let resp = send_authed(up, &next, None, "registry:catalog:*").await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(upstream_error(format!(
+                "upstream _catalog returned status {status} (does this registry support catalog listing?)"
+            )));
+        }
+        let link = link_next(resp.headers(), &up.url);
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| upstream_error(format!("reading upstream catalog: {e}")))?;
+        if let Some(repos) = body.get("repositories").and_then(|r| r.as_array()) {
+            out.extend(repos.iter().filter_map(|r| r.as_str().map(String::from)));
+        }
+        match link {
+            Some(url) => next = url,
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// List the tags of one upstream repository (`GET /v2/<repo>/tags/list`),
+/// following pagination. A clean `404` yields an empty list (repo has no tags).
+pub(crate) async fn list_tags(up: &OrgUpstream, repo: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let scope = format!("repository:{repo}:pull");
+    let mut next = format!("{}/v2/{}/tags/list?n=200", up.url, repo);
+    loop {
+        let resp = send_authed(up, &next, None, &scope).await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            break;
+        }
+        if !status.is_success() {
+            return Err(upstream_error(format!(
+                "upstream tags/list for {repo} returned status {status}"
+            )));
+        }
+        let link = link_next(resp.headers(), &up.url);
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| upstream_error(format!("reading upstream tags for {repo}: {e}")))?;
+        if let Some(tags) = body.get("tags").and_then(|t| t.as_array()) {
+            out.extend(tags.iter().filter_map(|t| t.as_str().map(String::from)));
+        }
+        match link {
+            Some(url) => next = url,
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve the `Link: <...>; rel="next"` pagination header to an absolute URL.
+/// The registry spec makes the link relative to the registry root.
+fn link_next(headers: &reqwest::header::HeaderMap, base: &str) -> Option<String> {
+    let link = headers.get(reqwest::header::LINK)?.to_str().ok()?;
+    if !link.contains("rel=\"next\"") {
+        return None;
+    }
+    let start = link.find('<')? + 1;
+    let end = link[start..].find('>')? + start;
+    let target = &link[start..end];
+    if target.starts_with("http://") || target.starts_with("https://") {
+        Some(target.to_string())
+    } else {
+        Some(format!("{}{}", base.trim_end_matches('/'), target))
+    }
+}
+
 /// Fetch a manifest from the upstream. `Ok(None)` for a clean upstream `404`.
-async fn fetch_manifest(
+pub(crate) async fn fetch_manifest(
     up: &OrgUpstream,
     repo: &str,
     reference: &str,

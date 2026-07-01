@@ -23,6 +23,7 @@ async function load() {
   } finally {
     loading.value = false;
   }
+  await loadImports();
 }
 onMounted(load);
 watch(slug, load);
@@ -57,6 +58,125 @@ async function createRepo() {
     creating.value = false;
   }
 }
+
+// ── import from an upstream registry ──
+interface ImportJob {
+  id: string;
+  upstream: string;
+  status: "running" | "completed" | "failed";
+  repos_total: number;
+  repos_done: number;
+  tags_total: number;
+  tags_done: number;
+  blobs_done: number;
+  bytes_done: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const imports = ref<ImportJob[]>([]);
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function loadImports() {
+  if (!canManage.value) return;
+  try {
+    const res = await api.get<{ imports: ImportJob[] }>(`/api/v1/orgs/${slug.value}/imports`);
+    imports.value = res.imports;
+  } catch {
+    // Non-admins get 403; just leave the panel empty.
+    imports.value = [];
+  }
+  const active = imports.value.some((i) => i.status === "running");
+  if (active && !pollTimer) {
+    pollTimer = setInterval(loadImports, 2500);
+  } else if (!active && pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    // A run just finished — refresh the repo list so imported repos appear.
+    void refreshRepos();
+  }
+}
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer);
+});
+
+async function refreshRepos() {
+  try {
+    const list = await api.get<{ repositories: RepoSummary[] }>(
+      `/api/v1/orgs/${slug.value}/repos`,
+    );
+    repos.value = list.repositories;
+  } catch {
+    /* ignore */
+  }
+}
+
+const orgs = ref<{ slug: string; name: string; role: string }[]>([]);
+const showImport = ref(false);
+const importOrg = ref("");
+const importHost = ref("");
+const importUser = ref("");
+const importPass = ref("");
+const importing = ref(false);
+const importError = ref("");
+
+async function openImport() {
+  importHost.value = "";
+  importUser.value = "";
+  importPass.value = "";
+  importError.value = "";
+  importOrg.value = slug.value;
+  try {
+    const res = await api.get<{ orgs: { slug: string; name: string; role: string }[] }>(
+      "/api/v1/orgs",
+    );
+    orgs.value = res.orgs.filter((o) => o.role === "owner" || o.role === "admin");
+  } catch {
+    orgs.value = [];
+  }
+  showImport.value = true;
+}
+function closeImport() {
+  showImport.value = false;
+}
+
+async function startImport() {
+  const host = importHost.value.trim();
+  const target = importOrg.value || slug.value;
+  if (!host || importing.value) return;
+  importing.value = true;
+  importError.value = "";
+  try {
+    await api.post(`/api/v1/orgs/${target}/imports`, {
+      host,
+      username: importUser.value.trim() || undefined,
+      password: importPass.value || undefined,
+    });
+    closeImport();
+    if (target !== slug.value) {
+      await navigateTo(`/orgs/${target}`);
+    } else {
+      await loadImports();
+    }
+  } catch (e) {
+    importError.value = apiErrorMessage(e);
+  } finally {
+    importing.value = false;
+  }
+}
+
+function humanBytes(n: number): string {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
+}
+function importPct(i: ImportJob): number {
+  if (i.status === "completed") return 100;
+  if (!i.repos_total) return 0;
+  return Math.min(99, Math.round((i.repos_done / i.repos_total) * 100));
+}
 </script>
 
 <template>
@@ -72,11 +192,55 @@ async function createRepo() {
           <UiBadge>{{ stats.members }} members</UiBadge>
           <UiBadge>{{ stats.teams }} teams</UiBadge>
         </template>
+        <UiButton
+          v-if="canManage"
+          size="sm"
+          variant="outline"
+          data-testid="import-open"
+          @click="openImport"
+        >
+          <UiIcon name="download" :size="16" /> Import
+        </UiButton>
         <UiButton v-if="canManage" size="sm" data-testid="new-repo" @click="openCreate">
           <UiIcon name="plus" :size="16" /> New repository
         </UiButton>
       </div>
     </div>
+
+    <!-- import jobs (active + recent) -->
+    <UiCard v-if="imports.length" class="mb-4">
+      <p class="mb-3 text-sm font-medium">Imports</p>
+      <div class="flex flex-col gap-3">
+        <div v-for="i in imports" :key="i.id" class="text-sm">
+          <div class="flex items-center justify-between gap-2">
+            <span class="truncate font-medium">{{ i.upstream }}</span>
+            <UiBadge
+              :class="{
+                'bg-primary/15 text-primary': i.status === 'running',
+                'bg-emerald-500/15 text-emerald-600': i.status === 'completed',
+                'bg-destructive/15 text-destructive': i.status === 'failed',
+              }"
+            >
+              {{ i.status }}
+            </UiBadge>
+          </div>
+          <div class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              class="h-full rounded-full transition-all"
+              :class="i.status === 'failed' ? 'bg-destructive' : 'bg-primary'"
+              :style="{ width: `${importPct(i)}%` }"
+            />
+          </div>
+          <div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+            <span>{{ i.repos_done }}/{{ i.repos_total }} repos</span>
+            <span>{{ i.tags_done }}/{{ i.tags_total }} tags</span>
+            <span>{{ i.blobs_done }} blobs</span>
+            <span>{{ humanBytes(i.bytes_done) }}</span>
+          </div>
+          <p v-if="i.error" class="mt-1 text-xs text-destructive">{{ i.error }}</p>
+        </div>
+      </div>
+    </UiCard>
 
     <UiCard>
       <div v-if="loading" class="py-8 text-center text-sm text-muted-foreground">Loading…</div>
@@ -137,6 +301,66 @@ async function createRepo() {
           <UiButton type="button" variant="ghost" @click="closeCreate">Cancel</UiButton>
           <UiButton type="submit" :disabled="creating || !newName.trim()" data-testid="new-repo-submit">
             {{ creating ? "Creating…" : "Create" }}
+          </UiButton>
+        </div>
+      </form>
+    </UiModal>
+
+    <UiModal :open="showImport" title="Import from a registry" @close="closeImport">
+      <form class="flex flex-col gap-4" @submit.prevent="startImport">
+        <p class="text-sm text-muted-foreground">
+          Copies <strong>every repository, tag and architecture</strong> from an upstream OCI
+          registry that supports catalog listing (registry:2, Harbor, DigitalOcean, GHCR
+          Enterprise…). Runs in the background; blobs already present are skipped.
+        </p>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium">Target organization</label>
+          <select
+            v-model="importOrg"
+            data-testid="import-org"
+            class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option v-for="o in orgs" :key="o.slug" :value="o.slug">
+              {{ o.name }} ({{ o.slug }})
+            </option>
+          </select>
+        </div>
+        <div>
+          <label class="mb-1.5 block text-sm font-medium">Registry host</label>
+          <UiInput
+            v-model="importHost"
+            placeholder="registry.digitalocean.com"
+            data-testid="import-host"
+          />
+          <p class="mt-1.5 text-xs text-muted-foreground">Host or URL (HTTPS assumed).</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="mb-1.5 block text-sm font-medium">Username</label>
+            <UiInput v-model="importUser" placeholder="token / user" data-testid="import-user" />
+          </div>
+          <div>
+            <label class="mb-1.5 block text-sm font-medium">Password / token</label>
+            <UiInput
+              v-model="importPass"
+              type="password"
+              placeholder="••••••••"
+              data-testid="import-pass"
+            />
+          </div>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          For DigitalOcean, use your API token as both the username and the password.
+        </p>
+        <p v-if="importError" class="text-sm text-destructive">{{ importError }}</p>
+        <div class="flex justify-end gap-2">
+          <UiButton type="button" variant="ghost" @click="closeImport">Cancel</UiButton>
+          <UiButton
+            type="submit"
+            :disabled="importing || !importHost.trim()"
+            data-testid="import-submit"
+          >
+            {{ importing ? "Starting…" : "Start import" }}
           </UiButton>
         </div>
       </form>

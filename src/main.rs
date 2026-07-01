@@ -8,6 +8,7 @@ mod config;
 mod db;
 mod error;
 mod gc;
+mod import;
 mod models;
 mod proxy;
 mod rate_limit;
@@ -165,6 +166,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => {
             let pool = db::connect(&config.database.path).await?;
             db::migrate(&pool).await?;
+            // Any import left `running` in the DB was orphaned by a restart.
+            db::imports::fail_interrupted(&pool).await?;
 
             let secret_key =
                 db::settings::ensure_secret_key(&pool, &config.auth.secret_key).await?;

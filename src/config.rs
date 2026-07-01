@@ -38,6 +38,19 @@ pub struct Config {
     /// Storage quota / upload-size limits.
     #[serde(default)]
     pub quota: QuotaConfig,
+    /// Bulk registry-import settings.
+    #[serde(default)]
+    pub import: ImportConfig,
+}
+
+/// Bulk registry-import settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImportConfig {
+    /// Allow importing from a loopback/unspecified upstream address (e.g. a
+    /// registry on the same host). Off by default as a basic SSRF guard; a
+    /// link-local address (cloud metadata, `169.254.169.254`) is refused
+    /// regardless of this setting.
+    pub allow_loopback: bool,
 }
 
 /// Storage quota / upload-size limits. Both default to `0` (unlimited) — quotas
@@ -263,6 +276,7 @@ impl Default for Config {
             analytics: AnalyticsConfig::default(),
             cache: CacheConfig::default(),
             quota: QuotaConfig::default(),
+            import: ImportConfig::default(),
         }
     }
 }

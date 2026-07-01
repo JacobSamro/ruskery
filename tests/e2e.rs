@@ -2124,3 +2124,136 @@ async fn pull_through_cache() {
         "push to a pull-through cache must be denied"
     );
 }
+
+/// Bulk catalog import: point an org at an upstream registry, enumerate its
+/// catalog (`/v2/_catalog`), and copy every repo/tag/blob in the background —
+/// then confirm the imported image is pullable from the target org.
+#[tokio::test]
+async fn catalog_import() {
+    let stub = spawn_s3_stub().await;
+    let up = spawn_upstream_stub().await;
+    // The upstream stub runs on loopback, so allow it (the SSRF guard blocks
+    // loopback by default; link-local/metadata stays blocked regardless).
+    let rk = Ruskery::spawn_with(&stub, &[("RUSKERY_IMPORT__ALLOW_LOOPBACK", "true")]).await;
+    let base = rk.base.clone();
+
+    let dash = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
+    let reg = reqwest::Client::new();
+
+    // First-run setup (admin + org "acme", owner).
+    let r = dash
+        .post(format!("{base}/api/v1/setup"))
+        .json(&json!({
+            "email": "admin@example.com", "username": "admin", "password": "supersecret",
+            "org_slug": "acme", "org_name": "Acme Inc"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "setup failed");
+
+    // Kick off the import from the upstream stub (anonymous token flow).
+    let start = dash
+        .post(format!("{base}/api/v1/orgs/acme/imports"))
+        .json(&json!({ "host": up.base }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), 201, "import should start");
+
+    // Poll until the job reports completed (bounded so a hang fails the test).
+    let mut done = None;
+    for _ in 0..100 {
+        let list: serde_json::Value = dash
+            .get(format!("{base}/api/v1/orgs/acme/imports"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let job = &list["imports"][0];
+        match job["status"].as_str() {
+            Some("completed") => {
+                done = Some(job.clone());
+                break;
+            }
+            Some("failed") => panic!("import failed: {:?}", job["error"]),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    let job = done.expect("import did not complete in time");
+    assert_eq!(job["repos_total"], 1);
+    assert_eq!(job["repos_done"], 1);
+    assert_eq!(job["tags_total"], 1);
+    assert_eq!(job["tags_done"], 1);
+    assert_eq!(job["blobs_done"], 2, "config + layer copied");
+
+    // The imported repo is pullable from the target org, digest-identical.
+    let tok: serde_json::Value = dash
+        .post(format!("{base}/api/v1/tokens"))
+        .json(&json!({ "name": "ci" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pat = tok["token"].as_str().unwrap().to_string();
+    let jwt = registry_token(
+        &reg,
+        &base,
+        "admin",
+        &pat,
+        "repository:acme/library/test:pull",
+    )
+    .await;
+
+    let m = reg
+        .get(format!("{base}/v2/acme/library/test/manifests/latest"))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(m.status(), 200, "imported manifest should be pullable");
+    assert_eq!(
+        m.headers()
+            .get("docker-content-digest")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        up.manifest_digest
+    );
+    let m_bytes = m.bytes().await.unwrap();
+    assert_eq!(
+        sha256_digest(&m_bytes),
+        up.manifest_digest,
+        "pulled manifest bytes must hash to its digest"
+    );
+
+    // A real pull of the config + layer blobs: GET follows the 307 to storage and
+    // returns the bytes, which must hash back to the requested digest — proving
+    // the actual layer content was imported, not just recorded.
+    for digest in [&up.config_digest, &up.layer_digest] {
+        let b = reg
+            .get(format!("{base}/v2/acme/library/test/blobs/{digest}"))
+            .bearer_auth(&jwt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            b.status(),
+            200,
+            "blob {digest} pull should succeed (307 → storage)"
+        );
+        let bytes = b.bytes().await.unwrap();
+        assert_eq!(
+            sha256_digest(&bytes),
+            *digest,
+            "pulled blob bytes must hash to its digest"
+        );
+    }
+}

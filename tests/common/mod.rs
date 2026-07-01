@@ -322,6 +322,27 @@ async fn up_handle(
             .into_response();
     }
 
+    // Catalog + tag listing, so the bulk importer can enumerate the registry.
+    if path == "/v2/_catalog" {
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            r#"{"repositories":["library/test"]}"#,
+        )
+            .into_response();
+    }
+    if let Some(name) = path
+        .strip_prefix("/v2/")
+        .and_then(|p| p.strip_suffix("/tags/list"))
+    {
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            format!(r#"{{"name":"{name}","tags":["latest"]}}"#),
+        )
+            .into_response();
+    }
+
     if let Some(i) = path.find("/manifests/") {
         let reference = &path[i + "/manifests/".len()..];
         return match st.manifests.get(reference) {
