@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-01
+
+### Added
+
+- **Import filter by image prefix.** The registry-import dialog gains an optional
+  *Image prefix* field that restricts a bulk import to upstream repositories
+  under one namespace (e.g. `my-registry` imports only `my-registry/*`),
+  imported under their original names. This targets shared-host registries like
+  DigitalOcean, where images live at `registry.digitalocean.com/<name>/<image>`
+  and you want just your account's repos. The match respects a `/` path
+  boundary, so `my-registry` won't pull in `my-registry-staging`; an empty
+  prefix imports the whole catalog as before.
+
 ## [0.7.0] - 2026-07-01
 
 ### Changed
