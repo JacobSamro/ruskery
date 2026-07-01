@@ -34,14 +34,74 @@ const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
      application/vnd.docker.distribution.manifest.list.v2+json, \
      application/vnd.docker.distribution.manifest.v2+json";
 
-/// Shared HTTP client (connection pool + default redirect following, so a blob
-/// `GET` that the upstream answers with a redirect to a CDN URL is followed).
+/// Shared HTTP client. Redirects are followed (a blob `GET` the upstream answers
+/// with a CDN redirect must be chased), but the custom policy refuses any hop to
+/// a link-local or unspecified IP literal — so a malicious upstream can't bounce
+/// a request onto the cloud-metadata endpoint (`169.254.169.254`).
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent(concat!("ruskery/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt
+                .url()
+                .host_str()
+                .is_some_and(is_blocked_ip_literal)
+            {
+                attempt.error("refusing to follow a redirect to a link-local/unspecified address")
+            } else if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .expect("build proxy http client")
 });
+
+/// True if `host` is an IP literal in a range we never fetch from — link-local
+/// (cloud metadata: `169.254/16`, `fe80::/10`) or unspecified. Loopback and
+/// private ranges are intentionally allowed (LAN registries are a legitimate
+/// upstream). Non-literal hostnames return `false` here and are checked via DNS
+/// by [`guard_fetch_target`].
+fn is_blocked_ip_literal(host: &str) -> bool {
+    use std::net::IpAddr;
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    match h.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => v4.is_link_local() || v4.is_unspecified(),
+        Ok(IpAddr::V6(v6)) => (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.is_unspecified(),
+        Err(_) => false,
+    }
+}
+
+/// Resolve `url`'s host and refuse if any address is link-local or unspecified.
+/// Applied before fetching an *upstream-controlled* URL — the `Bearer` realm and
+/// pagination `Link` targets — so those can't steer the token dance (and its
+/// credentials) at an internal metadata endpoint, even via a hostname that
+/// resolves there. Loopback stays permitted (LAN/self-hosted upstreams).
+async fn guard_fetch_target(url: &str) -> Result<()> {
+    use std::net::IpAddr;
+    let parsed = url::Url::parse(url).map_err(|_| upstream_error("invalid upstream URL"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| upstream_error("upstream URL is missing a host"))?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| upstream_error(format!("cannot resolve upstream host: {e}")))?;
+    for addr in addrs {
+        let ip = addr.ip();
+        let link_local = match ip {
+            IpAddr::V4(v4) => v4.is_link_local(),
+            IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+        };
+        if link_local || ip.is_unspecified() {
+            return Err(upstream_error(
+                "refusing to follow the upstream to a link-local/unspecified address",
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// A `502` for an upstream that is unreachable or misbehaving (distinct from a
 /// clean upstream `404`, which surfaces to the client as a normal not-found).
@@ -304,7 +364,11 @@ pub(crate) async fn list_catalog(up: &OrgUpstream) -> Result<Vec<String>> {
             out.extend(repos.iter().filter_map(|r| r.as_str().map(String::from)));
         }
         match link {
-            Some(url) => next = url,
+            // The next link is upstream-controlled; guard its host before following.
+            Some(url) => {
+                guard_fetch_target(&url).await?;
+                next = url;
+            }
             None => break,
         }
     }
@@ -337,7 +401,11 @@ pub(crate) async fn list_tags(up: &OrgUpstream, repo: &str) -> Result<Vec<String
             out.extend(tags.iter().filter_map(|t| t.as_str().map(String::from)));
         }
         match link {
-            Some(url) => next = url,
+            // The next link is upstream-controlled; guard its host before following.
+            Some(url) => {
+                guard_fetch_target(&url).await?;
+                next = url;
+            }
             None => break,
         }
     }
@@ -439,6 +507,10 @@ async fn bearer_token(up: &OrgUpstream, challenge: &str, scope: &str) -> Result<
     let Some(realm) = challenge_param(challenge, "realm") else {
         return Ok(None); // not a Bearer challenge we can satisfy
     };
+    // The realm comes from the upstream's WWW-Authenticate header and is where we
+    // send the org's Basic credentials — refuse to resolve it to a metadata
+    // endpoint so a hostile upstream can't harvest creds via SSRF.
+    guard_fetch_target(&realm).await?;
     let service = challenge_param(challenge, "service");
 
     let mut query: Vec<(&str, &str)> = Vec::new();
@@ -485,7 +557,21 @@ fn challenge_param(challenge: &str, key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::challenge_param;
+    use super::{challenge_param, is_blocked_ip_literal};
+
+    #[test]
+    fn blocks_metadata_and_unspecified_ip_literals() {
+        // Cloud metadata + unspecified are refused as redirect/realm targets.
+        assert!(is_blocked_ip_literal("169.254.169.254"));
+        assert!(is_blocked_ip_literal("0.0.0.0"));
+        assert!(is_blocked_ip_literal("[fe80::1]"));
+        assert!(is_blocked_ip_literal("[::]"));
+        // Public, loopback, and private ranges are allowed (LAN registries).
+        assert!(!is_blocked_ip_literal("registry-1.docker.io"));
+        assert!(!is_blocked_ip_literal("127.0.0.1"));
+        assert!(!is_blocked_ip_literal("10.0.0.5"));
+        assert!(!is_blocked_ip_literal("52.1.2.3"));
+    }
 
     #[test]
     fn parses_bearer_challenge_params() {
