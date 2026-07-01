@@ -167,8 +167,8 @@ async fn setup(State(state): State<AppState>, Json(req): Json<SetupReq>) -> Resu
     // Atomic guarded insert: only the first of any racing first-run requests
     // creates the super-admin; the rest see `None` and get a conflict, so
     // concurrent setup can't mint multiple instance admins.
-    let Some(user) = db::users::create_first_admin(state.db(), &req.email, &req.username, &hash)
-        .await?
+    let Some(user) =
+        db::users::create_first_admin(state.db(), &req.email, &req.username, &hash).await?
     else {
         return Err(Error::conflict("setup already completed"));
     };

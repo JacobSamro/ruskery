@@ -96,7 +96,10 @@ pub async fn reap_loop(state: AppState) {
         tokio::time::sleep(REAP_INTERVAL).await;
         for session in state.uploads().take_expired(SESSION_IDLE_TTL) {
             let s = session.lock().await;
-            let _ = s.storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+            let _ = s
+                .storage
+                .abort_multipart(&s.temp_key, &s.s3_upload_id)
+                .await;
             tracing::warn!(
                 org = %s.org_id,
                 "aborted an upload session idle over {}s",
@@ -212,7 +215,10 @@ pub async fn start(
     if state.uploads().len() >= MAX_ACTIVE_SESSIONS {
         for session in state.uploads().take_expired(SESSION_IDLE_TTL) {
             let s = session.lock().await;
-            let _ = s.storage.abort_multipart(&s.temp_key, &s.s3_upload_id).await;
+            let _ = s
+                .storage
+                .abort_multipart(&s.temp_key, &s.s3_upload_id)
+                .await;
         }
         if state.uploads().len() >= MAX_ACTIVE_SESSIONS {
             return Err(Error::oci(

@@ -52,11 +52,7 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent(concat!("ruskery/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt
-                .url()
-                .host_str()
-                .is_some_and(is_blocked_ip_literal)
-            {
+            if attempt.url().host_str().is_some_and(is_blocked_ip_literal) {
                 attempt.error("refusing to follow a redirect to a link-local/unspecified address")
             } else if attempt.previous().len() >= 10 {
                 attempt.error("too many redirects")

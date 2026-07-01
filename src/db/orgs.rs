@@ -237,11 +237,7 @@ pub async fn catalog_for_user(db: &Db, user_id: &str) -> Result<Vec<String>> {
 
 /// Catalog confined to a single org (for an org-scoped token). Still joins
 /// `org_members` so the listing never exceeds the user's actual membership.
-pub async fn catalog_for_user_in_org(
-    db: &Db,
-    user_id: &str,
-    org_id: &str,
-) -> Result<Vec<String>> {
+pub async fn catalog_for_user_in_org(db: &Db, user_id: &str, org_id: &str) -> Result<Vec<String>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT o.slug, r.name
          FROM repositories r
