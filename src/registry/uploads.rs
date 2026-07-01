@@ -5,7 +5,7 @@
 //! then server-side-copy the object to its content-addressed key. Session state
 //! lives in memory (single process); a restart simply asks the client to retry.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use aws_sdk_s3::types::CompletedPart;
@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use dashmap::DashMap;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::db;
 use crate::error::{Error, Result};
@@ -33,6 +33,13 @@ const REAP_INTERVAL: Duration = Duration::from_secs(300);
 /// Backstop cap on concurrent in-memory sessions, so a push principal can't
 /// allocate unbounded sessions faster than the idle reaper reclaims them.
 const MAX_ACTIVE_SESSIONS: usize = 5_000;
+
+/// Admission slots for concurrent upload sessions. A permit is acquired *before*
+/// a session is created and held on the session until it finishes, is cancelled,
+/// or is reaped (the permit rides in `UploadSession` and releases on drop). This
+/// enforces the cap atomically instead of a raceable check-then-create on len().
+static SESSION_SLOTS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_ACTIVE_SESSIONS)));
 
 /// In-memory map of active upload sessions.
 #[derive(Clone, Default)]
@@ -55,11 +62,6 @@ impl UploadRegistry {
 
     fn remove(&self, id: &str) {
         self.inner.remove(id);
-    }
-
-    /// Number of live sessions (for the start-time backstop cap).
-    fn len(&self) -> usize {
-        self.inner.len()
     }
 
     /// Remove and return sessions idle longer than `ttl` so the caller can abort
@@ -133,6 +135,10 @@ pub struct UploadSession {
     /// Last time this session saw activity; the reaper aborts sessions idle
     /// beyond [`SESSION_IDLE_TTL`].
     pub last_activity: Instant,
+    /// Admission slot held for this session's lifetime; released automatically
+    /// when the session is dropped (finish / cancel / reap), freeing a slot.
+    #[allow(dead_code)] // held for its Drop; never read
+    permit: OwnedSemaphorePermit,
 }
 
 impl UploadSession {
@@ -210,24 +216,29 @@ pub async fn start(
         // Mount miss → fall through to a normal upload session (per spec).
     }
 
-    // Backstop against unbounded session accumulation: reclaim idle sessions
-    // first, then refuse if we're still at the cap (retryable).
-    if state.uploads().len() >= MAX_ACTIVE_SESSIONS {
-        for session in state.uploads().take_expired(SESSION_IDLE_TTL) {
-            let s = session.lock().await;
-            let _ = s
-                .storage
-                .abort_multipart(&s.temp_key, &s.s3_upload_id)
-                .await;
+    // Admission control: claim a slot atomically *before* allocating anything.
+    // If none are free, reclaim idle sessions (releasing their permits on drop)
+    // and try once more before refusing — so concurrent starts can't overshoot
+    // the cap the way a check-then-create on len() could.
+    let permit = match SESSION_SLOTS.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            for session in state.uploads().take_expired(SESSION_IDLE_TTL) {
+                let s = session.lock().await;
+                let _ = s
+                    .storage
+                    .abort_multipart(&s.temp_key, &s.s3_upload_id)
+                    .await;
+            }
+            SESSION_SLOTS.clone().try_acquire_owned().map_err(|_| {
+                Error::oci(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "TOOMANYREQUESTS",
+                    "too many concurrent uploads; retry shortly",
+                )
+            })?
         }
-        if state.uploads().len() >= MAX_ACTIVE_SESSIONS {
-            return Err(Error::oci(
-                StatusCode::TOO_MANY_REQUESTS,
-                "TOOMANYREQUESTS",
-                "too many concurrent uploads; retry shortly",
-            ));
-        }
-    }
+    };
 
     let upload_id = uuid::Uuid::new_v4().to_string();
     let temp_key = Storage::upload_key(org_id, &upload_id);
@@ -249,6 +260,7 @@ pub async fn start(
             finalizing: false,
             storage,
             last_activity: Instant::now(),
+            permit,
         },
     );
 
