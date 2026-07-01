@@ -10,6 +10,7 @@
 #   RUSKERY_VERSION   pin a release (default: latest)
 #   RUSKERY_REPO      github owner/repo (default: jacobsamro/ruskery)
 #   RUSKERY_PREFIX    install prefix for the binary (default: /usr/local/bin)
+#   RUSKERY_FORCE     set to 1 to reinstall even if already on the target version
 set -eu
 
 REPO="${RUSKERY_REPO:-jacobsamro/ruskery}"
@@ -58,6 +59,12 @@ VERSION_NUM="${VERSION#v}"
 OLD_VERSION=""
 if [ -x "$PREFIX/ruskery" ]; then
   OLD_VERSION="$("$PREFIX/ruskery" --version 2>/dev/null | awk '{print $2}')"
+fi
+# Already on the target version? Nothing to do — skip the download/reinstall.
+# Set RUSKERY_FORCE=1 to reinstall the same version anyway (e.g. repair).
+if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" = "$VERSION_NUM" ] && [ "${RUSKERY_FORCE:-0}" != "1" ]; then
+  log "ruskery $VERSION_NUM is already installed — nothing to do (RUSKERY_FORCE=1 to reinstall)"
+  exit 0
 fi
 if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$VERSION_NUM" ]; then
   log "upgrading ruskery $OLD_VERSION -> $VERSION_NUM ($arch)"
