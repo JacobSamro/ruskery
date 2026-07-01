@@ -181,6 +181,11 @@ docker run -d --name ruskery -p 80:80 -p 443:443 \
 - Per‑IP rate limiting on authentication endpoints; CSP, HSTS (under TLS), `X-Frame-Options`, and
   `X-Content-Type-Options` on every response.
 - Per‑org storage isolation; presigned pull URLs are short‑lived.
+- **The confidentiality boundary is the organization.** Layer/config blobs are content‑addressed and
+  deduplicated *within* an org, so any member with `pull` on any repo in that org can fetch a blob by its
+  exact digest — repo scopes confine pushes, manifests, and tags, not raw blob bytes by digest. There is
+  no cross‑org dedupe or existence oracle, so this never crosses a tenant. Put mutually‑untrusted
+  workloads in **separate organizations**.
 - An append‑only audit log records pushes, membership changes, and domain changes.
 
 Found a vulnerability? Please report it privately via a GitHub security advisory rather than a public issue.
