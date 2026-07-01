@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Redesigned repository image list with per-image pull counts.** A repo's tags
+  are now grouped by image (manifest digest) — like GitHub's package view — so
+  all tags pointing at one image share a row (`latest` carries the brand accent),
+  with the published time, image size, tag count, the full `sha256:` digest
+  (click to copy), a copy-pull-command action, and a **pull count** per image.
+  Pulls are counted per digest at serve time (bounded, off the response path) and
+  stored in a new `image_pulls` table (migration `0009`); the count is cleared
+  when the image or repo is deleted.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added

@@ -359,7 +359,10 @@ async fn dispatch(
     // Per-image pull counter for the dashboard's image list. A manifest GET that
     // succeeds carries `Docker-Content-Digest` (blob GETs 307, tag/referrer GETs
     // omit it), so that header uniquely identifies a pull. Bumped off the
-    // response path so it never adds latency to the pull.
+    // response path so it never adds latency to the pull. A bounded semaphore
+    // caps concurrent bump tasks so a pull storm can't pile up writers on
+    // SQLite's single-writer lock; if saturated the count is skipped (the metric
+    // is best-effort, so a slight undercount under extreme load is acceptable).
     if method == Method::GET {
         if let Ok(resp) = result.as_ref() {
             if resp.status() == StatusCode::OK {
@@ -369,12 +372,15 @@ async fn dispatch(
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string)
                 {
-                    let db = state.db().clone();
-                    let org_id = org.id.clone();
-                    let repo = repo_name.clone();
-                    tokio::spawn(async move {
-                        let _ = db::orgs::bump_image_pull(&db, &org_id, &repo, &digest).await;
-                    });
+                    if let Ok(permit) = PULL_COUNTER_LIMIT.clone().try_acquire_owned() {
+                        let db = state.db().clone();
+                        let org_id = org.id.clone();
+                        let repo = repo_name.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            let _ = db::orgs::bump_image_pull(&db, &org_id, &repo, &digest).await;
+                        });
+                    }
                 }
             }
         }
@@ -382,6 +388,11 @@ async fn dispatch(
 
     result.unwrap_or_else(|e| e.into_response())
 }
+
+/// Caps concurrent in-flight pull-counter writes (see `dispatch`). Small because
+/// SQLite serializes writers anyway; excess pulls skip the (best-effort) count.
+static PULL_COUNTER_LIMIT: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(8)));
 
 fn unsupported() -> crate::error::Result<Response> {
     Err(Error::oci(

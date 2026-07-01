@@ -308,6 +308,19 @@ pub async fn delete_manifest(db: &Db, repo_id: &str, digest: &str) -> Result<()>
         .bind(digest)
         .execute(&mut *tx)
         .await?;
+    // Drop the image's pull counter too, so a later re-push of the same digest
+    // doesn't inherit a stale count. image_pulls is keyed by (org_id, repo name),
+    // resolved from the repo id here.
+    sqlx::query(
+        "DELETE FROM image_pulls
+         WHERE digest = ?2
+           AND org_id = (SELECT org_id FROM repositories WHERE id = ?1)
+           AND repo   = (SELECT name FROM repositories WHERE id = ?1)",
+    )
+    .bind(repo_id)
+    .bind(digest)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
