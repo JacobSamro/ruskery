@@ -235,6 +235,51 @@ pub async fn catalog_for_user(db: &Db, user_id: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Catalog confined to a single org (for an org-scoped token). Still joins
+/// `org_members` so the listing never exceeds the user's actual membership.
+pub async fn catalog_for_user_in_org(
+    db: &Db,
+    user_id: &str,
+    org_id: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT o.slug, r.name
+         FROM repositories r
+         JOIN orgs o ON o.id = r.org_id
+         JOIN org_members m ON m.org_id = o.id
+         WHERE m.user_id = ? AND o.id = ?
+         ORDER BY o.slug, r.name",
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(slug, name)| format!("{slug}/{name}"))
+        .collect())
+}
+
+/// Catalog confined to a single repository (for a repo-scoped token).
+pub async fn catalog_for_user_repo(db: &Db, user_id: &str, repo_id: &str) -> Result<Vec<String>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT o.slug, r.name
+         FROM repositories r
+         JOIN orgs o ON o.id = r.org_id
+         JOIN org_members m ON m.org_id = o.id
+         WHERE m.user_id = ? AND r.id = ?
+         ORDER BY o.slug, r.name",
+    )
+    .bind(user_id)
+    .bind(repo_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(slug, name)| format!("{slug}/{name}"))
+        .collect())
+}
+
 /// The highest permission `user_id` has on an existing repository, combining the
 /// org-level role (owner/admin ⇒ admin) with any team grants on that repo.
 pub async fn repo_permission(

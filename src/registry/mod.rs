@@ -435,7 +435,18 @@ async fn catalog(state: &AppState, headers: &HeaderMap) -> Response {
     let Some(claims) = auth::verify_bearer(state, headers) else {
         return auth::challenge(state, headers, Some("registry:catalog:*"));
     };
-    match db::orgs::catalog_for_user(state.db(), &claims.sub).await {
+    // Confine the listing to the token's scope: an org- or repo-scoped PAT must
+    // not enumerate repositories outside its grant, even within the user's orgs.
+    let repos = match (claims.scope.kind.as_str(), claims.scope.id.as_deref()) {
+        ("org", Some(org_id)) => {
+            db::orgs::catalog_for_user_in_org(state.db(), &claims.sub, org_id).await
+        }
+        ("repo", Some(repo_id)) => {
+            db::orgs::catalog_for_user_repo(state.db(), &claims.sub, repo_id).await
+        }
+        _ => db::orgs::catalog_for_user(state.db(), &claims.sub).await,
+    };
+    match repos {
         Ok(repos) => (StatusCode::OK, Json(json!({ "repositories": repos }))).into_response(),
         Err(e) => e.into_response(),
     }
@@ -491,8 +502,23 @@ async fn token_endpoint(
         }
     }
 
+    // Carry the PAT's scope so metadata endpoints (`_catalog`) can confine
+    // results — the `access` list only covers repositories the client asked for.
+    let scope_claim = match &token_scope {
+        crate::models::TokenScope::All => token::ScopeClaim::all(),
+        crate::models::TokenScope::Org(id) => token::ScopeClaim::org(id),
+        crate::models::TokenScope::Repo(id) => token::ScopeClaim::repo(id),
+    };
+
     let ttl = state.config().auth.token_ttl_secs as i64;
-    match token::issue(state.secret_key(), &user.id, &service, access, ttl) {
+    match token::issue(
+        state.secret_key(),
+        &user.id,
+        &service,
+        access,
+        scope_claim,
+        ttl,
+    ) {
         Ok(jwt) => {
             let body = json!({
                 "token": jwt,

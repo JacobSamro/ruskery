@@ -17,6 +17,45 @@ pub struct AccessEntry {
     pub actions: Vec<String>, // subset of ["pull","push","delete"]
 }
 
+/// The bearer's PAT scope, carried so metadata endpoints (`_catalog`) can
+/// confine results to what the token may reach — an `access` list only covers
+/// the repositories the client explicitly requested, which catalog doesn't.
+/// `kind` is `all` | `org` | `repo`; `id` is the org/repo id for the latter two.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScopeClaim {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+impl Default for ScopeClaim {
+    /// Absent on older tokens (and account-password logins) → full scope.
+    fn default() -> Self {
+        Self {
+            kind: "all".to_string(),
+            id: None,
+        }
+    }
+}
+
+impl ScopeClaim {
+    pub fn all() -> Self {
+        Self::default()
+    }
+    pub fn org(id: &str) -> Self {
+        Self {
+            kind: "org".to_string(),
+            id: Some(id.to_string()),
+        }
+    }
+    pub fn repo(id: &str) -> Self {
+        Self {
+            kind: "repo".to_string(),
+            id: Some(id.to_string()),
+        }
+    }
+}
+
 /// JWT claims for a registry bearer token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -28,6 +67,8 @@ pub struct Claims {
     pub jti: String,
     #[serde(default)]
     pub access: Vec<AccessEntry>,
+    #[serde(default)]
+    pub scope: ScopeClaim,
 }
 
 impl Claims {
@@ -45,6 +86,7 @@ pub fn issue(
     user_id: &str,
     service: &str,
     access: Vec<AccessEntry>,
+    scope: ScopeClaim,
     ttl_secs: i64,
 ) -> Result<String> {
     let now = now_unix();
@@ -56,6 +98,7 @@ pub fn issue(
         exp: now + ttl_secs,
         jti: uuid::Uuid::new_v4().to_string(),
         access,
+        scope,
     };
     encode(
         &Header::default(),

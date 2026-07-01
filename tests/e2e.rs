@@ -1200,6 +1200,30 @@ async fn end_to_end() {
         404
     );
 
+    // ── catalog is confined to the token's scope ─────────────────────
+    // With both acme/app and acme/trash present, a repo-scoped token's
+    // `_catalog` must list only its repo — not every repo in the user's org.
+    let app_catalog_jwt =
+        registry_token(&reg, &base, "admin", &scoped_pat, "registry:catalog:*").await;
+    let scoped_catalog: serde_json::Value = reg
+        .get(format!("{base}/v2/_catalog"))
+        .bearer_auth(&app_catalog_jwt)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let repos = scoped_catalog["repositories"].as_array().unwrap();
+    assert!(
+        repos.iter().any(|r| r == "acme/app"),
+        "repo-scoped catalog must include its own repo"
+    );
+    assert!(
+        !repos.iter().any(|r| r == "acme/trash"),
+        "repo-scoped catalog must not enumerate other repos"
+    );
+
     // ── cross-org isolation ──────────────────────────────────────────
     // A second user owns their own org; neither admin nor the outsider can
     // reach the other's repositories.
