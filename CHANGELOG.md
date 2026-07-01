@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-01
+
 ### Added
 
 - **Create a repository from the dashboard.** Owners/admins can now create an
@@ -246,7 +248,8 @@ backed by Tigris (S3) for storage and CDN, with an embedded Nuxt dashboard.
 - Upload sessions are bound to their org and storage client; strict digest
   parsing; repository-name validation; non-JSON manifests rejected.
 
-[Unreleased]: https://github.com/jacobsamro/ruskery/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jacobsamro/ruskery/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jacobsamro/ruskery/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jacobsamro/ruskery/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jacobsamro/ruskery/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/jacobsamro/ruskery/compare/v0.2.0...v0.2.1
